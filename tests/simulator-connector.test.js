@@ -15,6 +15,13 @@ test("includes deterministic attention development scenarios", () => {
   assert.equal(SIMULATOR_SCENARIOS["attention-busy-chat"].length >= 20, true);
 });
 
+test("includes a semantic attention scenario for synthetic-provider evaluation", () => {
+  const scenario = SIMULATOR_SCENARIOS["attention-semantic-burst"];
+  assert.equal(scenario.length, 7);
+  assert.equal(scenario.some(({ data }) => data.text === "Which sword is that?"), true);
+  assert.equal(scenario.some(({ data }) => data.text === "Where did you find that chest?"), true);
+});
+
 test("canonical simulator emits valid events and reports lifecycle state", async () => {
   let nextId = 0;
   const connector = new SimulatorConnector({

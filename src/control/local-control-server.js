@@ -122,7 +122,7 @@ export class LocalControlServer {
     this.#url = `http://${hostForUrl(this.#host)}:${actualPort}/`;
     this.#unsubscribe = this.#runtime.subscribe((message) => {
       if (message.type === "runtime-state") this.#broker.broadcast("snapshot", this.#runtime.getSnapshot());
-      else if (["live-event", "attention-decision", "connector-state", "speech-state", "diagnostic"].includes(message.type)) {
+      else if (["live-event", "attention-decision", "attention-state", "connector-state", "speech-state", "diagnostic"].includes(message.type)) {
         this.#broker.broadcast(message.type, message.data);
       }
     });

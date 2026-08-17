@@ -36,7 +36,7 @@ button { font: inherit; }
 .event-time, .event-user { color: #8296a5; }
 .event-type { color: #63dbc1; }
 .event-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.attention-row { display: grid; grid-template-columns: 90px 105px 90px 150px 155px 1fr; width: 100%; border: 0; border-radius: 8px; padding: 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
+.attention-row { display: grid; grid-template-columns: 90px 145px 90px 150px 190px 1fr; width: 100%; border: 0; border-radius: 8px; padding: 10px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .attention-row:hover, .attention-row:focus-visible { outline: none; background: #192a34; }
 .attention-action.promote { color: #63dbc1; }
 .attention-action.ignore, .attention-reason, .attention-group { color: #8296a5; }

@@ -5,6 +5,7 @@ import {
   SIMULATOR_SCENARIOS,
   SimulatorConnector,
   TikFinityConnector,
+  aiProviderConfigurationIssue,
   createJsonLogger,
   loadConfig,
   normalizeTikFinityEnvelope,
@@ -51,7 +52,7 @@ try {
 } catch (error) {
   logger.error("cli.invalid_attention_mode", {
     attentionMode: option("--attention"),
-    availableAttentionModes: ["passthrough", "deterministic"],
+    availableAttentionModes: ["passthrough", "deterministic", "ai"],
     error: error.message,
   });
   process.exitCode = 1;
@@ -80,7 +81,17 @@ if (connectorChoice === "simulator") {
   process.exitCode = 1;
 }
 
-if (connector && speechEngineType && attentionMode) {
+const aiProviderIssue = aiProviderConfigurationIssue({
+  mode: attentionMode,
+  provider: config.attention.ai.provider,
+  apiKey: process.env.OPENAI_API_KEY,
+});
+if (aiProviderIssue) {
+  logger.error(aiProviderIssue.code, aiProviderIssue);
+  process.exitCode = 1;
+}
+
+if (connector && speechEngineType && attentionMode && process.exitCode !== 1) {
   const runtime = new LiveAssistantRuntime({
     config,
     connector,
@@ -89,6 +100,7 @@ if (connector && speechEngineType && attentionMode) {
     logger,
     includeRaw,
     attentionMode,
+    openAiApiKey: process.env.OPENAI_API_KEY,
   });
   runtimeDiagnostic = (diagnostic) => runtime.reportDiagnostic(diagnostic);
   let controlServer;

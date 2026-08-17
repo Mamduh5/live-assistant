@@ -17,6 +17,27 @@ export const DEFAULT_CONFIG = Object.freeze({
     groupWindowMs: 1_500,
     maxPendingGroups: 128,
     decisionHistoryLimit: 200,
+    ai: Object.freeze({
+      provider: "openai",
+      batchWindowMs: 1_000,
+      maxBatchMessages: 20,
+      maxBatchItems: 20,
+      maxBatchChars: 6_000,
+      maxPendingBatches: 3,
+      maxConcurrentRequests: 1,
+      maxSummaryChars: 160,
+      requestsPerMinute: 30,
+      failureThreshold: 3,
+      circuitCooldownMs: 30_000,
+      openai: Object.freeze({
+        model: "gpt-5.6-luna",
+        reasoningEffort: "low",
+        verbosity: "low",
+        requestTimeoutMs: 6_000,
+        baseUrl: "https://api.openai.com/v1/",
+        maxResponseBytes: 131_072,
+      }),
+    }),
     scoring: Object.freeze({
       messageBase: 45,
       questionBase: 65,
@@ -77,6 +98,11 @@ const POSITIVE_INTEGER_FIELDS = [
   ["LIVE_ASSISTANT_ATTENTION_DECISION_HISTORY_LIMIT", "attention", "decisionHistoryLimit"],
   ["LIVE_ASSISTANT_ATTENTION_BUSY_MESSAGE_COUNT", "attention.scoring", "busyMessageCount"],
   ["LIVE_ASSISTANT_ATTENTION_VERY_BUSY_MESSAGE_COUNT", "attention.scoring", "veryBusyMessageCount"],
+  ["LIVE_ASSISTANT_AI_BATCH_WINDOW_MS", "attention.ai", "batchWindowMs"],
+  ["LIVE_ASSISTANT_AI_MAX_BATCH_MESSAGES", "attention.ai", "maxBatchMessages"],
+  ["LIVE_ASSISTANT_AI_MAX_BATCH_CHARS", "attention.ai", "maxBatchChars"],
+  ["LIVE_ASSISTANT_AI_REQUESTS_PER_MINUTE", "attention.ai", "requestsPerMinute"],
+  ["LIVE_ASSISTANT_AI_REQUEST_TIMEOUT_MS", "attention.ai.openai", "requestTimeoutMs"],
 ];
 
 const BOOLEAN_FIELDS = [
@@ -131,6 +157,10 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
     attention: {
       ...DEFAULT_CONFIG.attention,
       scoring: { ...DEFAULT_CONFIG.attention.scoring },
+      ai: {
+        ...DEFAULT_CONFIG.attention.ai,
+        openai: { ...DEFAULT_CONFIG.attention.ai.openai },
+      },
     },
     speechPolicy: {
       ...DEFAULT_CONFIG.speechPolicy,
@@ -191,8 +221,37 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
 
   const attentionMode = environment.LIVE_ASSISTANT_ATTENTION_MODE;
   if (attentionMode !== undefined) {
-    if (attentionMode === "passthrough" || attentionMode === "deterministic") config.attention.mode = attentionMode;
+    if (["passthrough", "deterministic", "ai"].includes(attentionMode)) config.attention.mode = attentionMode;
     else invalid(onDiagnostic, "LIVE_ASSISTANT_ATTENTION_MODE", attentionMode, config.attention.mode);
+  }
+
+  const aiProvider = environment.LIVE_ASSISTANT_AI_PROVIDER;
+  if (aiProvider !== undefined) {
+    if (aiProvider === "openai") config.attention.ai.provider = aiProvider;
+    else invalid(onDiagnostic, "LIVE_ASSISTANT_AI_PROVIDER", aiProvider, config.attention.ai.provider);
+  }
+
+  const openAiModel = environment.LIVE_ASSISTANT_OPENAI_MODEL;
+  if (openAiModel !== undefined) {
+    if (openAiModel.trim().length > 0 && openAiModel.length <= 200) config.attention.ai.openai.model = openAiModel;
+    else invalid(onDiagnostic, "LIVE_ASSISTANT_OPENAI_MODEL", openAiModel, config.attention.ai.openai.model);
+  }
+
+  const reasoningEffort = environment.LIVE_ASSISTANT_OPENAI_REASONING_EFFORT;
+  if (reasoningEffort !== undefined) {
+    if (["none", "low", "medium", "high", "xhigh", "max"].includes(reasoningEffort)) config.attention.ai.openai.reasoningEffort = reasoningEffort;
+    else invalid(onDiagnostic, "LIVE_ASSISTANT_OPENAI_REASONING_EFFORT", reasoningEffort, config.attention.ai.openai.reasoningEffort);
+  }
+
+  const openAiBaseUrl = environment.LIVE_ASSISTANT_OPENAI_BASE_URL;
+  if (openAiBaseUrl !== undefined) {
+    try {
+      const parsed = new URL(openAiBaseUrl);
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error("invalid");
+      config.attention.ai.openai.baseUrl = parsed.href;
+    } catch {
+      invalid(onDiagnostic, "LIVE_ASSISTANT_OPENAI_BASE_URL", openAiBaseUrl, config.attention.ai.openai.baseUrl);
+    }
   }
 
   const speechVoice = environment.LIVE_ASSISTANT_SPEECH_VOICE;

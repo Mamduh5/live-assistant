@@ -12,6 +12,7 @@ export const AttentionClassification = Object.freeze({
 
 const ACTIONS = new Set(Object.values(AttentionAction));
 const CLASSIFICATIONS = new Set(Object.values(AttentionClassification));
+const STRATEGIES = new Set(["passthrough", "deterministic", "ai", "deterministic_fallback"]);
 
 export function assertSpeechCandidate(candidate) {
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) throw new TypeError("SpeechCandidate must be an object");
@@ -35,10 +36,14 @@ export function assertAttentionDecision(decision) {
   if (!CLASSIFICATIONS.has(decision.classification)) throw new TypeError("AttentionDecision.classification is invalid");
   if (!Number.isFinite(decision.priority) || decision.priority < 0 || decision.priority > 100) throw new TypeError("AttentionDecision.priority must be between 0 and 100");
   if (typeof decision.reason !== "string" || decision.reason.length === 0) throw new TypeError("AttentionDecision.reason is required");
+  if (decision.strategy !== undefined && !STRATEGIES.has(decision.strategy)) throw new TypeError("AttentionDecision.strategy is invalid");
   if (!Array.isArray(decision.sourceEventIds) || decision.sourceEventIds.length < 1) throw new TypeError("AttentionDecision.sourceEventIds are required");
   if (typeof decision.primaryEventId !== "string") throw new TypeError("AttentionDecision.primaryEventId is required");
   if (!decision.score || !Number.isFinite(decision.score.total) || !Number.isFinite(decision.score.threshold) || !Array.isArray(decision.score.factors)) {
     throw new TypeError("AttentionDecision.score is invalid");
+  }
+  if (decision.group?.kind !== undefined && decision.group.kind !== "exact" && decision.group.kind !== "semantic") {
+    throw new TypeError("AttentionDecision.group.kind is invalid");
   }
   if (decision.candidate !== null && decision.candidate !== undefined) assertSpeechCandidate(decision.candidate);
   return decision;

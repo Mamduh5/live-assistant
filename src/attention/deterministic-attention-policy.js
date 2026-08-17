@@ -136,10 +136,12 @@ export class DeterministicAttentionPolicy {
       priority: total,
       reason,
       classification,
+      strategy: mode === "passthrough" ? "passthrough" : "deterministic",
       sourceEventIds: [...sourceEventIds],
       primaryEventId,
       score: { total, threshold, factors },
       group: group ? {
+        kind: "exact",
         key: group.key,
         occurrences: group.occurrences,
         uniqueUsers: group.uniqueUsers,
@@ -160,6 +162,7 @@ export class DeterministicAttentionPolicy {
       classification: event.type === LiveEventType.CHAT_MESSAGE
         ? AttentionClassification.MESSAGE
         : AttentionClassification.NON_CHAT,
+      strategy: "deterministic",
       sourceEventIds: [event.id],
       primaryEventId: event.id,
       score: { total: 0, threshold: this.#config.scoring.quietThreshold, factors: [] },

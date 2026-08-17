@@ -23,7 +23,10 @@ class StubRuntime {
     connector: { name: "simulator", state: "connected" },
     speech: { configuredEngine: "windows", enabled: true, paused: false, workerState: "idle", queueSize: 0, currentRequestId: null },
     events: { historySize: 1, rawInspectionEnabled: false },
-    attention: { mode: "deterministic", trafficLevel: "quiet", recentChatCount: 1, pendingGroupCount: 0, decisionHistorySize: 1 },
+    attention: {
+      mode: "ai", trafficLevel: "quiet", recentChatCount: 1, pendingGroupCount: 0, decisionHistorySize: 1,
+      provider: { name: "openai", model: "gpt-5.6-luna", state: "healthy", inFlight: 0, pendingBatches: 0, lastLatencyMs: 100, fallbackCount: 0 },
+    },
   };
 
   getStatus() { return structuredClone(this.status); }
@@ -31,8 +34,9 @@ class StubRuntime {
   getRecentAttention({ limit }) {
     return [{
       id: "decision-1", createdAt: 1, action: "promote", classification: "message", priority: 45,
-      reason: "message_allowed", sourceEventIds: ["event-1"], score: { total: 45, threshold: 40, factors: [] },
-      group: null, displayText: "<img src=x onerror=alert(1)>",
+      reason: "useful_message", strategy: "ai", importance: 45, provider: { name: "openai", model: "gpt-5.6-luna" },
+      sourceEventIds: ["event-1"], score: { total: 45, threshold: 40, factors: [{ code: "ai_importance", value: 45 }] },
+      group: { kind: "semantic", occurrences: 1, uniqueUsers: 1 }, displayText: "<img src=x onerror=alert(1)>",
     }].slice(-limit);
   }
   getSnapshot() {
@@ -127,8 +131,10 @@ test("serves bounded safe attention history and validates method and limit", asy
   try {
     const response = await fetch(`${url}api/v1/attention?limit=999`);
     const decision = (await response.json()).decisions[0];
-  assert.equal(requestedLimit, 200);
+    assert.equal(requestedLimit, 200);
     assert.equal(decision.displayText, "<img src=x onerror=alert(1)>");
+    assert.equal(decision.strategy, "ai");
+    assert.equal(decision.provider.model, "gpt-5.6-luna");
     assert.equal("raw" in decision, false);
     assert.equal((await fetch(`${url}api/v1/attention?limit=bad`)).status, 400);
     assert.equal((await fetch(`${url}api/v1/attention`, { method: "POST" })).status, 405);
@@ -182,6 +188,9 @@ test("SSE sends an initial snapshot and state updates, cleans disconnected clien
     runtime.emit("attention-decision", { id: "decision-live" });
     const attentionUpdate = new TextDecoder().decode((await reader.read()).value);
     assert.match(attentionUpdate, /event: attention-decision/);
+    runtime.emit("attention-state", { mode: "ai", provider: { state: "degraded" } });
+    const attentionState = new TextDecoder().decode((await reader.read()).value);
+    assert.match(attentionState, /event: attention-state/);
     await reader.cancel();
     await until(() => server.sseClientCount === 0);
     const shutdownResponse = await fetch(`${url}api/v1/stream`);
@@ -227,6 +236,9 @@ test("serves a CSP-protected dependency-free dashboard without unsafe innerHTML 
     assert.doesNotMatch(script, /innerHTML/);
     assert.match(script, /textContent/);
     assert.match(script, /attention-decision/);
+    assert.match(script, /attention-state/);
+    assert.match(script, /AI provider/);
+    assert.match(script, /group\.kind/);
   } finally {
     await server.stop();
   }

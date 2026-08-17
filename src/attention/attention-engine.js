@@ -4,7 +4,9 @@ import {
   AttentionAction,
   AttentionClassification,
   assertAttentionDecision,
+  assertSpeechCandidate,
 } from "./attention-contracts.js";
+import { AiAttentionBatcher } from "./ai-attention-batcher.js";
 import {
   DeterministicAttentionPolicy,
   formatQuestionText,
@@ -13,7 +15,7 @@ import {
   stableUserKey,
 } from "./deterministic-attention-policy.js";
 
-const MODES = new Set(["passthrough", "deterministic"]);
+const MODES = new Set(["passthrough", "deterministic", "ai"]);
 
 export function resolveAttentionMode(requestedMode, configuredMode = "passthrough") {
   const mode = requestedMode ?? configuredMode;
@@ -44,6 +46,28 @@ function validateConfig(config) {
   )) {
     throw new RangeError("attention thresholds must be ordered quiet <= busy <= very-busy");
   }
+  const aiIntegerFields = [
+    "batchWindowMs", "maxBatchMessages", "maxBatchItems", "maxBatchChars", "maxPendingBatches",
+    "maxConcurrentRequests", "maxSummaryChars", "requestsPerMinute", "failureThreshold", "circuitCooldownMs",
+  ];
+  for (const field of aiIntegerFields) {
+    if (!Number.isSafeInteger(config.ai[field]) || config.ai[field] < 1) throw new RangeError(`attention.ai.${field} must be a positive integer`);
+  }
+  if (config.ai.maxConcurrentRequests !== 1) throw new RangeError("attention.ai.maxConcurrentRequests must be 1 in Phase 2");
+  if (!config.ai.openai || !Number.isSafeInteger(config.ai.openai.requestTimeoutMs) || config.ai.openai.requestTimeoutMs < 1) {
+    throw new RangeError("attention.ai.openai.requestTimeoutMs must be positive");
+  }
+  if (config.ai.provider !== "openai") throw new RangeError("attention.ai.provider must be openai");
+  if (typeof config.ai.openai.model !== "string" || config.ai.openai.model.trim().length === 0) throw new RangeError("attention.ai.openai.model is required");
+  if (!["none", "low", "medium", "high", "xhigh", "max"].includes(config.ai.openai.reasoningEffort)) throw new RangeError("attention.ai.openai.reasoningEffort is invalid");
+  if (!["low", "medium", "high"].includes(config.ai.openai.verbosity)) throw new RangeError("attention.ai.openai.verbosity is invalid");
+  if (!Number.isSafeInteger(config.ai.openai.maxResponseBytes) || config.ai.openai.maxResponseBytes < 1) throw new RangeError("attention.ai.openai.maxResponseBytes must be positive");
+  try {
+    const baseUrl = new URL(config.ai.openai.baseUrl);
+    if (!["http:", "https:"].includes(baseUrl.protocol) || baseUrl.username || baseUrl.password) throw new Error("invalid");
+  } catch {
+    throw new RangeError("attention.ai.openai.baseUrl is invalid");
+  }
 }
 
 export class AttentionEngine {
@@ -55,11 +79,13 @@ export class AttentionEngine {
   #clearTimeout;
   #onDiagnostic;
   #failureIdFactory;
+  #aiBatcher;
   #recent = [];
   #latestReceivedAt = 0;
   #groups = new Map();
   #decisions = [];
   #subscribers = [];
+  #stateSubscribers = [];
   #timer;
   #timerDeadline;
   #closed = false;
@@ -74,6 +100,7 @@ export class AttentionEngine {
     onDiagnostic = () => {},
     policyDependencies = {},
     failureIdFactory = randomUUID,
+    aiProvider,
   }) {
     validateConfig(config);
     this.#config = config;
@@ -84,6 +111,19 @@ export class AttentionEngine {
     this.#clearTimeout = clearTimeoutFn;
     this.#onDiagnostic = onDiagnostic;
     this.#failureIdFactory = failureIdFactory;
+    if (this.#mode === "ai") {
+      this.#aiBatcher = new AiAttentionBatcher({
+        config: config.ai,
+        provider: aiProvider,
+        clock,
+        setTimeoutFn,
+        clearTimeoutFn,
+        onResult: (batch, analysis) => this.#recordAiAnalysis(batch, analysis),
+        onFallback: (batch, reason) => this.#recordAiFallback(batch, reason),
+        onDiagnostic: (value) => this.#diagnostic(value),
+        onStateChange: () => this.#emitState(),
+      });
+    }
   }
 
   observe(event, { speechEligible = true } = {}) {
@@ -92,6 +132,10 @@ export class AttentionEngine {
     try {
       const classification = this.#policy.classify(event);
       const trafficLevel = this.#recordRecent(event, classification);
+      if (this.#mode === "ai" && event.type === LiveEventType.CHAT_MESSAGE) {
+        this.#aiBatcher.observe(event, { classification, speechEligible });
+        return null;
+      }
       if (
         this.#mode === "deterministic" &&
         classification === AttentionClassification.QUESTION
@@ -101,7 +145,7 @@ export class AttentionEngine {
       }
       const identity = stableUserKey(event.user);
       const decision = this.#policy.decide({
-        mode: this.#mode,
+        mode: this.#mode === "ai" ? "deterministic" : this.#mode,
         classification,
         representativeText: event.type === LiveEventType.CHAT_MESSAGE
           ? event.data.text.trim().replace(/\s+/gu, " ")
@@ -114,6 +158,10 @@ export class AttentionEngine {
         createdAt: event.receivedAt,
         speechEligible,
       });
+      if (this.#mode === "ai") {
+        decision.strategy = "ai";
+        decision.provider = null;
+      }
       this.#recordDecision(decision);
       return decision;
     } catch (error) {
@@ -291,6 +339,11 @@ export class AttentionEngine {
 
   async flush() {
     if (this.#closed) return [];
+    if (this.#aiBatcher) {
+      const before = this.#decisions.length;
+      await this.#aiBatcher.flush();
+      return this.#decisions.slice(before).map((decision) => structuredClone(decision));
+    }
     this.#cancelTimer();
     const decisions = [];
     for (const group of [...this.#groups.values()]) {
@@ -302,6 +355,7 @@ export class AttentionEngine {
 
   suppressPendingSpeech() {
     for (const group of this.#groups.values()) group.speechEligible = false;
+    this.#aiBatcher?.suppressPendingSpeech();
   }
 
   async close() {
@@ -309,7 +363,9 @@ export class AttentionEngine {
     this.#closed = true;
     this.#cancelTimer();
     this.#groups.clear();
+    await this.#aiBatcher?.close();
     this.#subscribers.length = 0;
+    this.#stateSubscribers.length = 0;
   }
 
   #cancelTimer() {
@@ -328,6 +384,16 @@ export class AttentionEngine {
     };
   }
 
+  subscribeState(handler) {
+    if (typeof handler !== "function") throw new TypeError("Attention state subscriber must be a function");
+    if (this.#closed) return () => {};
+    this.#stateSubscribers.push(handler);
+    return () => {
+      const index = this.#stateSubscribers.indexOf(handler);
+      if (index >= 0) this.#stateSubscribers.splice(index, 1);
+    };
+  }
+
   #recordDecision(decision) {
     this.#decisions.push(decision);
     if (this.#decisions.length > this.#config.decisionHistoryLimit) {
@@ -341,6 +407,103 @@ export class AttentionEngine {
         this.#diagnostic({ code: "attention.subscriber_failed", error: error instanceof Error ? error.message : String(error) });
       }
     }
+    this.#emitState();
+  }
+
+  #recordAiAnalysis(batch, analysis) {
+    if (this.#closed) return;
+    const byId = new Map(batch.items.map((item) => [item.itemId, item]));
+    const provider = this.#aiBatcher.getStatus();
+    for (const semanticGroup of analysis.groups) {
+      const items = semanticGroup.itemIds.map((id) => byId.get(id));
+      const sourceEventIds = items.flatMap((item) => item.sourceEventIds);
+      const users = new Map();
+      for (const item of items) for (const [key, value] of item.users) users.set(key, value);
+      const occurrences = items.reduce((total, item) => total + item.occurrences, 0);
+      const createdAt = this.#clock();
+      const trafficLevel = this.#trafficLevel(Math.max(this.#latestReceivedAt, createdAt));
+      const threshold = this.#thresholdFor(trafficLevel);
+      const action = semanticGroup.importance >= threshold ? AttentionAction.PROMOTE : AttentionAction.IGNORE;
+      const summary = semanticGroup.summary.normalize("NFKC").trim().replace(/\s+/gu, " ");
+      const candidateText = semanticGroup.classification === AttentionClassification.QUESTION && users.size > 1
+        ? `${users.size} viewers asked: ${summary}`
+        : summary;
+      const primaryEventId = items[0].primaryEventId;
+      const candidate = action === AttentionAction.PROMOTE
+        ? assertSpeechCandidate({
+            text: candidateText,
+            priority: semanticGroup.importance,
+            primaryEventId,
+            sourceEventIds,
+            ...(users.size === 1 ? { userId: [...users.values()][0] } : {}),
+            createdAt,
+            speechEligible: items.every((item) => item.speechEligible),
+          })
+        : null;
+      this.#recordDecision(assertAttentionDecision({
+        id: this.#failureIdFactory(),
+        createdAt,
+        action,
+        priority: semanticGroup.importance,
+        reason: semanticGroup.reason,
+        classification: semanticGroup.classification,
+        strategy: "ai",
+        importance: semanticGroup.importance,
+        provider: { name: provider.name, model: provider.model },
+        sourceEventIds,
+        primaryEventId,
+        score: {
+          total: semanticGroup.importance,
+          threshold,
+          factors: [{ code: "ai_importance", value: semanticGroup.importance }],
+        },
+        group: {
+          kind: "semantic",
+          occurrences,
+          uniqueUsers: users.size,
+          itemCount: items.length,
+          firstSeen: Math.min(...items.map((item) => item.firstReceivedAt)),
+        },
+        summary,
+        candidate,
+      }));
+    }
+  }
+
+  #recordAiFallback(batch, reason) {
+    if (this.#closed) return;
+    for (const item of batch.items) {
+      const group = {
+        key: item.key,
+        representativeText: item.text,
+        occurrences: item.occurrences,
+        uniqueUsers: item.users.size,
+        firstSeen: item.firstReceivedAt,
+        deadline: batch.sealedAt,
+      };
+      const decision = this.#policy.decide({
+        mode: "deterministic",
+        classification: item.classificationHint,
+        representativeText: item.text,
+        sourceEventIds: item.sourceEventIds,
+        primaryEventId: item.primaryEventId,
+        userId: item.users.size === 1 ? [...item.users.values()][0] : undefined,
+        group: item.classificationHint === AttentionClassification.QUESTION ? group : null,
+        trafficLevel: this.#trafficLevel(Math.max(this.#latestReceivedAt, this.#clock())),
+        createdAt: this.#clock(),
+        speechEligible: item.speechEligible,
+      });
+      decision.strategy = "deterministic_fallback";
+      decision.fallbackReason = reason;
+      if (decision.group) decision.group.kind = "exact";
+      this.#recordDecision(decision);
+    }
+  }
+
+  #thresholdFor(trafficLevel) {
+    if (trafficLevel === "very_busy") return this.#config.scoring.veryBusyThreshold;
+    if (trafficLevel === "busy") return this.#config.scoring.busyThreshold;
+    return this.#config.scoring.quietThreshold;
   }
 
   #failureDecision({ createdAt, classification, primaryEventId, sourceEventIds, group = null }) {
@@ -351,6 +514,7 @@ export class AttentionEngine {
       priority: 0,
       reason: "policy_failed",
       classification,
+      strategy: this.#mode === "ai" ? "deterministic_fallback" : "deterministic",
       sourceEventIds: [...sourceEventIds],
       primaryEventId,
       score: {
@@ -376,7 +540,14 @@ export class AttentionEngine {
       recentChatCount: this.#recent.length,
       pendingGroupCount: this.#groups.size,
       decisionHistorySize: this.#decisions.length,
+      ...(this.#aiBatcher ? { provider: this.#aiBatcher.getStatus() } : {}),
     };
+  }
+
+  #emitState() {
+    for (const subscriber of [...this.#stateSubscribers]) {
+      try { subscriber(this.getStatus()); } catch { /* status subscribers are isolated */ }
+    }
   }
 
   #diagnostic(diagnostic) {

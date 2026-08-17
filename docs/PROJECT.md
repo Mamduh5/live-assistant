@@ -24,7 +24,9 @@ The foundation provides a path from simulator or TikFinity events through bounde
 
 Deterministic attention reduces obvious noise before any external AI is introduced. It uses bounded recent-chat state, exact-normalized question groups, stable-viewer repetition, traffic-aware thresholds, and explainable scores. It emits an `AttentionDecision`, then a `SpeechCandidate`; speech policy remains the independent safety and rate-control gate. **Deterministic Attention is not semantic AI.** Textually different questions remain separate even when a person would understand them as similar.
 
-Future vertical slices may add an AI attention policy behind the same decision seam, other replaceable speech engines, or richer local integrations. LLM integration, semantic grouping/summarization, embeddings, chatbot replies, OBS, persistent settings, dynamic tuning UI, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the current foundation.
+AI Attention Phase 2 now implements that policy seam through bounded semantic batches and an optional OpenAI Responses API provider. It can group same-intent chat and produce short streamer-facing summaries, while the application owns thresholds, reliable counts, fallback, and final speech safety. This introduces opt-in external processing, latency, cost, and model variability without making AI required infrastructure.
+
+AI chatbot replies, persistent AI memory, embeddings, vector databases, prompt editing, dynamic provider switching, OBS, persistent settings, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms remain outside the current foundation.
 
 ## Success criteria
 

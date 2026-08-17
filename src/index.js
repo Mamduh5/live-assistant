@@ -1,5 +1,13 @@
 export { DEFAULT_CONFIG, loadConfig } from "./config/defaults.js";
 export { AttentionEngine, resolveAttentionMode } from "./attention/attention-engine.js";
+export { AiAttentionBatcher } from "./attention/ai-attention-batcher.js";
+export { AiProviderError, OpenAiAttentionProvider, aiProviderConfigurationIssue, validateAiAnalysis } from "./attention/ai-attention-provider.js";
+export {
+  AI_ATTENTION_INSTRUCTIONS,
+  AI_ATTENTION_PROMPT_VERSION,
+  AI_ATTENTION_RESPONSE_SCHEMA,
+  AI_REASON_CODES,
+} from "./attention/ai-attention-prompt.js";
 export { AttentionAction, AttentionClassification, assertAttentionDecision, assertSpeechCandidate } from "./attention/attention-contracts.js";
 export {
   DeterministicAttentionPolicy,

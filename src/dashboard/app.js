@@ -29,11 +29,19 @@ function renderStatus() {
     ["Paused", speech.paused ? "yes" : "no"], ["Queue", speech.queueSize],
     ["Voice", speech.voice], ["Rate / volume", speech.rate === undefined ? null : `${speech.rate} / ${speech.volume}`],
   ]);
-  renderPairs(byId("attention-status"), [
+  const attentionPairs = [
     ["Mode", attention.mode], ["Traffic", attention.trafficLevel],
     ["Recent chat", attention.recentChatCount], ["Pending groups", attention.pendingGroupCount],
     ["Recent decisions", attention.decisionHistorySize],
-  ]);
+  ];
+  if (attention.provider) attentionPairs.push(
+    ["AI provider", attention.provider.name], ["Model", attention.provider.model],
+    ["Provider state", attention.provider.state], ["In flight", attention.provider.inFlight],
+    ["Pending batches", attention.provider.pendingBatches],
+    ["Last latency", attention.provider.lastLatencyMs === null ? null : `${attention.provider.lastLatencyMs} ms`],
+    ["Fallbacks", attention.provider.fallbackCount],
+  );
+  renderPairs(byId("attention-status"), attentionPairs);
   byId("pause-speech").disabled = !speech.enabled || speech.paused || speech.workerState === "stopped";
   byId("resume-speech").disabled = !speech.enabled || !speech.paused || speech.workerState === "stopped";
   byId("cancel-speech").disabled = !speech.enabled || !speech.currentRequestId;
@@ -49,10 +57,10 @@ function renderAttention() {
     button.className = "attention-row";
     button.append(
       textElement("time", new Date(decision.createdAt).toLocaleTimeString(), "event-time"),
-      textElement("span", decision.classification, "event-type"),
+      textElement("span", decision.strategy ?? decision.classification, "event-type"),
       textElement("span", `${decision.action} · ${decision.priority}`, `attention-action ${decision.action}`),
       textElement("span", decision.reason, "attention-reason"),
-      textElement("span", decision.group ? `group ${decision.group.occurrences} / ${decision.group.uniqueUsers} viewers` : "single", "attention-group"),
+      textElement("span", decision.group ? `${decision.group.kind ?? "exact"} group ${decision.group.occurrences} / ${decision.group.uniqueUsers} viewers` : "single", "attention-group"),
       textElement("span", decision.displayText ?? "—", "event-summary"),
     );
     button.addEventListener("click", () => {
@@ -155,6 +163,9 @@ stream.addEventListener("attention-decision", (message) => {
   state.attention.push(JSON.parse(message.data));
   state.attention = state.attention.slice(-200);
   renderAttention();
+});
+stream.addEventListener("attention-state", (message) => {
+  state.status.attention = JSON.parse(message.data); renderStatus();
 });
 stream.addEventListener("connector-state", (message) => {
   state.status.connector = JSON.parse(message.data); renderStatus();

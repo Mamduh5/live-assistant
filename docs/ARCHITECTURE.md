@@ -8,7 +8,9 @@ Status: initial implemented architecture.
 External source -> Connector -> Normalizer -> canonical LiveEvent -> LiveEventBus
                                                                   |-> EventHistory
                                                                   |-> bounded AttentionEngine state
-                                                                  |    `-> AttentionDecision
+                                                                  |    |-> passthrough / deterministic
+                                                                  |    `-> bounded AI batch -> provider
+                                                                  |         `-> validated AttentionDecision
                                                                   |         `-> SpeechCandidate
                                                                   |              `-> final speech policy
                                                                   `-> other consumers/output adapters
@@ -34,7 +36,7 @@ TikFinity / Simulator -> LiveAssistantRuntime
 
 The native `node:http` server binds to `127.0.0.1:4820` by default and uses `/api/v1/` as a durable local API namespace. Dashboard mode must be requested explicitly. A finite simulator completes and drains speech while its runtime history remains available; a reconnecting or unavailable TikFinity adapter does not take down the dashboard.
 
-REST exposes health, sanitized status, capped recent-event and attention-decision projections, and speech controls. SSE immediately sends a snapshot, then selected live-event, attention-decision, connector, speech, and diagnostic projections. The server subscribes once to the runtime and fans out to bounded clients. When a response reports backpressure, subsequent updates for that client are counted rather than queued; after `drain`, one `stream-gap` event instructs the browser to refetch status/history. Disconnect and shutdown remove response and runtime listeners.
+REST exposes health, sanitized status, capped recent-event and attention-decision projections, and speech controls. AI status is a provider-independent projection containing name/model/state and bounded operational counters, never secrets, prompts, base URLs, or chat text. SSE immediately sends a snapshot, then selected live-event, attention-decision, attention-state, connector, speech, and diagnostic projections. The server subscribes once to the runtime and fans out to bounded clients. When a response reports backpressure, subsequent updates for that client are counted rather than queued; after `drain`, one `stream-gap` event instructs the browser to refetch status/history. Disconnect and shutdown remove response and runtime listeners.
 
 Pause gates the worker between utterances and stops the runtime from accepting new speech requests; chat received while paused remains in event history and is not replayed on resume. Existing waiting requests remain until resumed or explicitly cleared. Clear removes only waiting requests. Cancel-current aborts only the active engine call, after which the worker accepts future requests.
 
@@ -127,7 +129,25 @@ LiveEvent -> AttentionEngine -> AttentionDecision -> SpeechCandidate
 
 Exact-normalized matching performs Unicode NFKC normalization, trimming, whitespace collapse, locale-independent case folding, and terminal question-mark normalization. It never replaces synonyms, translates, stems, computes fuzzy distance, or performs semantic clustering. Stable canonical user ID, then username, supplies a unique-viewer key. Unknown users increase occurrence count but not viewer count. Multiple known viewers yield deterministic count-based text without usernames. **Deterministic Attention is not semantic AI.**
 
-Traffic is `quiet`, `busy`, or `very_busy` based on recent canonical chat count. Each level selects a configured promotion threshold. Decisions contain bounded source IDs, classification, action, reason, total, threshold, small score-factor list, optional group metadata, and an optional provider-independent candidate. Ignored decisions remain inspectable. The policy boundary can later host an AI implementation, but Phase 1 contains no LLM, embeddings, or pseudo-semantic rules.
+Traffic is `quiet`, `busy`, or `very_busy` based on recent canonical chat count. Each level selects a configured promotion threshold. Decisions contain bounded source IDs, classification, action, reason, total, threshold, small score-factor list, optional group metadata, and an optional provider-independent candidate. Ignored decisions remain inspectable. The deterministic policy itself contains no LLM, embeddings, or pseudo-semantic rules; the separate AI mode described below can delegate bounded semantic analysis to a provider.
+
+## AI attention provider
+
+AI mode extends the same engine without changing canonical or speech contracts:
+
+```text
+canonical chat -> AiAttentionBatcher -> AiAttentionProvider
+                                      -> validated semantic groups
+                                      -> AttentionDecision -> SpeechCandidate
+```
+
+Admission remains synchronous. `AiAttentionBatcher` owns the short timer, exact-duplicate pre-compression, item/source mapping, pending queue, one-request concurrency, local request budget, simple circuit breaker, deterministic fallback, and finite flush. Its provider input contains only local item ID, normalized text, occurrence count, known-viewer count, and classification hint. Canonical source IDs, identity keys, and speech eligibility stay in local batch mappings.
+
+`OpenAiAttentionProvider` owns the OpenAI Responses API HTTP boundary, hard timeout, cancellation, bounded response read, safe error metadata, source-controlled `ai-attention-v1` instructions, and strict JSON Schema validation. It explicitly uses `store: false`, sends no tools, starts no background response, and creates no conversation chain. Viewer text is serialized under a user input role and cannot alter fixed instructions or schema. The API key exists only in the Authorization header.
+
+Provider groups must cover every input item exactly once. Unknown, duplicated, omitted, malformed, overlong, refused, or incomplete output invalidates the whole batch. The application then computes occurrence and stable-viewer counts locally, applies the existing traffic threshold to model importance, adds local viewer-count phrasing, and produces the existing contracts. No chain-of-thought is requested or stored.
+
+Provider/network/validation failure, timeout, response overflow, local budget exhaustion, pending overflow, and circuit-open state visibly use the existing deterministic policy as `deterministic_fallback`. There is no automatic retry. Explicit shutdown aborts the active request and suppresses late decisions; finite completion flushes and waits. See [ADR 0007](decisions/0007-ai-attention-provider.md).
 
 The final speech policy handles empty candidate text, URLs, maximum length, exact normalized output duplicates, per-user cooldown, disabled users, and queue pressure. It returns an inspectable speech outcome and never plays audio itself. Attention priority propagates into the request as metadata but does not change FIFO scheduling. Grouped multi-viewer candidates omit `userId`, so no arbitrary viewer's cooldown is applied. Attention still records decisions when speech is off or paused; candidates received while paused are ineligible and never replayed on resume.
 
@@ -141,7 +161,7 @@ Speech playback is off by default. The Windows engine is intentionally unsupport
 
 ## Future boundaries
 
-- A future AI attention policy may consume canonical events and bounded application context behind the same decision seam. It cannot become transport or bypass final speech controls.
+- Future AI providers or model revisions remain behind the bounded provider seam. They cannot become transport or bypass application thresholds and final speech controls.
 - Rules/actions consume canonical events and decisions, never provider payloads.
 - OBS remains an output adapter through a future local overlay API and/or OBS WebSocket.
 - The local API may later add simulation, selected configuration, or overlay state without exposing runtime internals directly. It remains loopback-only by default.
@@ -166,5 +186,6 @@ Structured diagnostics expose connector lifecycle, normalization failures, queue
 - Speech engines are replaceable, with Windows System.Speech as the first local provider; see [ADR 0004](decisions/0004-windows-system-speech-engine.md).
 - Local operations use a loopback REST/SSE control plane and same-origin static dashboard; see [ADR 0005](decisions/0005-local-control-plane.md).
 - Deterministic Attention Phase 1 uses bounded exact-match state and an explicit candidate boundary; see [ADR 0006](decisions/0006-deterministic-attention-engine.md).
+- AI Attention Phase 2 uses bounded semantic batches, strict provider validation, minimal external data, and deterministic fallback; see [ADR 0007](decisions/0007-ai-attention-provider.md).
 
 Frontend frameworks, desktop shells, HTTP server libraries, non-Windows TTS providers, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.

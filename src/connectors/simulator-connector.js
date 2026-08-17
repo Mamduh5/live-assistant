@@ -51,6 +51,15 @@ export const SIMULATOR_SCENARIOS = Object.freeze({
     { type: LiveEventType.ROOM_VIEWER_COUNT, data: { count: 245 } },
     { type: LiveEventType.GIFT_RECEIVED, user: { id: "mix-7", displayName: "Gia" }, data: { giftId: "rose", giftName: "Rose", quantity: 2 } },
   ],
+  "attention-semantic-burst": [
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "semantic-1", displayName: "Ari" }, data: { text: "What weapon are you using?" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "semantic-2", displayName: "Bo" }, data: { text: "Which sword is that?" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "semantic-3", displayName: "Cai" }, data: { text: "What are you fighting with?" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "semantic-4", displayName: "Dee" }, data: { text: "Where did you find that chest?" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "semantic-5", displayName: "Em" }, data: { text: "How did you get that loot box?" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "semantic-6", displayName: "Fox" }, data: { text: "nice dodge" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "semantic-7", displayName: "Gia" }, data: { text: "🔥🔥🔥" } },
+  ],
 });
 
 export const RAW_SIMULATOR_SCENARIOS = Object.freeze({

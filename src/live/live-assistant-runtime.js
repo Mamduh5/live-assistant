@@ -9,6 +9,7 @@ import { SpeechWorker } from "../speech/speech-worker.js";
 import { runConnector } from "./run-connector.js";
 import { AttentionEngine } from "../attention/attention-engine.js";
 import { projectAttentionDecision } from "../inspection/attention-projection.js";
+import { OpenAiAttentionProvider } from "../attention/ai-attention-provider.js";
 
 const MAX_API_EVENTS = 200;
 const MAX_DIAGNOSTICS = 50;
@@ -20,7 +21,8 @@ function noopLogger() {
 function publicDiagnostic(diagnostic, timestamp) {
   const safeFields = [
     "connector", "state", "status", "attempt", "delayMs", "maxQueue", "queueSize",
-    "speechRequestId", "eventId", "policy", "droppedEventId", "reason",
+    "speechRequestId", "eventId", "policy", "droppedEventId", "reason", "batchId",
+    "status", "providerCode", "requestId",
   ];
   return Object.fromEntries([
     ["code", typeof diagnostic.code === "string" ? diagnostic.code : "runtime.diagnostic"],
@@ -91,6 +93,8 @@ export class LiveAssistantRuntime {
     attentionMode = config.attention.mode,
     attentionEngine,
     attentionDependencies = {},
+    aiProvider,
+    openAiApiKey,
   }) {
     if (!connector || typeof connector.events !== "function" || typeof connector.close !== "function") {
       throw new TypeError("LiveAssistantRuntime requires a connector");
@@ -106,11 +110,21 @@ export class LiveAssistantRuntime {
 
     this.#bus = new LiveEventBus({ ...config.eventBus, onDiagnostic: (value) => this.reportDiagnostic(value) });
     this.#history = new EventHistory(config.eventHistory);
+    let resolvedAiProvider = aiProvider;
+    if (!attentionEngine && attentionMode === "ai" && !resolvedAiProvider) {
+      if (config.attention.ai.provider !== "openai") throw new Error(`Unsupported AI attention provider: ${config.attention.ai.provider}`);
+      resolvedAiProvider = new OpenAiAttentionProvider({
+        config: config.attention.ai.openai,
+        apiKey: openAiApiKey,
+        clock,
+      });
+    }
     this.#attention = attentionEngine ?? new AttentionEngine({
       config: config.attention,
       mode: attentionMode,
       clock,
       onDiagnostic: (value) => this.reportDiagnostic(value),
+      ...(resolvedAiProvider ? { aiProvider: resolvedAiProvider } : {}),
       ...attentionDependencies,
     });
     this.#speechPolicy = new DeterministicSpeechPolicy(config.speechPolicy);
@@ -124,6 +138,9 @@ export class LiveAssistantRuntime {
 
     this.#unsubscribers.push(this.#bus.subscribe((event) => this.#handleEvent(event)));
     this.#unsubscribers.push(this.#attention.subscribe((decision) => this.#handleAttentionDecision(decision)));
+    if (typeof this.#attention.subscribeState === "function") {
+      this.#unsubscribers.push(this.#attention.subscribeState((state) => this.#emit("attention-state", state)));
+    }
     if (typeof connector.subscribeState === "function") {
       this.#unsubscribers.push(connector.subscribeState((state) => {
         this.#connectorState = state;

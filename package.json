@@ -11,6 +11,7 @@
     "start": "node src/cli.js",
     "demo": "node src/cli.js --scenario mixed-burst",
     "dashboard": "node src/cli.js --dashboard",
+    "dashboard:ai-fixture": "node scripts/ai-dashboard-fixture.js",
     "check": "node scripts/check-syntax.js",
     "test": "node --test --experimental-test-isolation=none",
     "validate": "npm run check && npm test"

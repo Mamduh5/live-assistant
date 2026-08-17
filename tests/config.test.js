@@ -150,7 +150,7 @@ test("loads validated deterministic attention configuration", () => {
 test("invalid attention mode and relationships fall back safely with diagnostics", () => {
   const diagnostics = [];
   const config = loadConfig({
-    LIVE_ASSISTANT_ATTENTION_MODE: "ai",
+    LIVE_ASSISTANT_ATTENTION_MODE: "semantic",
     LIVE_ASSISTANT_ATTENTION_BUSY_MESSAGE_COUNT: "20",
     LIVE_ASSISTANT_ATTENTION_VERY_BUSY_MESSAGE_COUNT: "10",
     LIVE_ASSISTANT_ATTENTION_QUIET_THRESHOLD: "80",
@@ -162,4 +162,43 @@ test("invalid attention mode and relationships fall back safely with diagnostics
   assert.equal(config.attention.scoring.quietThreshold, DEFAULT_CONFIG.attention.scoring.quietThreshold);
   assert.equal(config.attention.scoring.busyThreshold, DEFAULT_CONFIG.attention.scoring.busyThreshold);
   assert.equal(diagnostics.length, 3);
+});
+
+test("loads validated AI attention and OpenAI tuning without storing a secret", () => {
+  const config = loadConfig({
+    LIVE_ASSISTANT_ATTENTION_MODE: "ai",
+    LIVE_ASSISTANT_AI_PROVIDER: "openai",
+    LIVE_ASSISTANT_AI_BATCH_WINDOW_MS: "750",
+    LIVE_ASSISTANT_AI_MAX_BATCH_MESSAGES: "12",
+    LIVE_ASSISTANT_AI_MAX_BATCH_CHARS: "3000",
+    LIVE_ASSISTANT_AI_REQUESTS_PER_MINUTE: "15",
+    LIVE_ASSISTANT_AI_REQUEST_TIMEOUT_MS: "4000",
+    LIVE_ASSISTANT_OPENAI_MODEL: "gpt-5.6-luna-test",
+    LIVE_ASSISTANT_OPENAI_REASONING_EFFORT: "medium",
+    LIVE_ASSISTANT_OPENAI_BASE_URL: "http://127.0.0.1:9000/v1",
+    OPENAI_API_KEY: "must-not-enter-config",
+  });
+  assert.equal(config.attention.mode, "ai");
+  assert.equal(config.attention.ai.batchWindowMs, 750);
+  assert.equal(config.attention.ai.maxBatchMessages, 12);
+  assert.equal(config.attention.ai.maxBatchChars, 3000);
+  assert.equal(config.attention.ai.requestsPerMinute, 15);
+  assert.equal(config.attention.ai.openai.requestTimeoutMs, 4000);
+  assert.equal(config.attention.ai.openai.model, "gpt-5.6-luna-test");
+  assert.equal(config.attention.ai.openai.reasoningEffort, "medium");
+  assert.equal(config.attention.ai.openai.baseUrl, "http://127.0.0.1:9000/v1");
+  assert.equal(JSON.stringify(config).includes("must-not-enter-config"), false);
+});
+
+test("invalid AI provider settings retain safe defaults with diagnostics", () => {
+  const diagnostics = [];
+  const config = loadConfig({
+    LIVE_ASSISTANT_AI_PROVIDER: "unknown",
+    LIVE_ASSISTANT_AI_BATCH_WINDOW_MS: "0",
+    LIVE_ASSISTANT_OPENAI_MODEL: "",
+    LIVE_ASSISTANT_OPENAI_REASONING_EFFORT: "extreme",
+    LIVE_ASSISTANT_OPENAI_BASE_URL: "https://secret@example.com/v1",
+  }, (value) => diagnostics.push(value));
+  assert.deepEqual(config.attention.ai, DEFAULT_CONFIG.attention.ai);
+  assert.equal(diagnostics.length, 5);
 });

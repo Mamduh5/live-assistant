@@ -24,7 +24,7 @@ TikFinity / Simulator -> LiveAssistantRuntime -> local control server
 
 - Node.js 22 or newer
 
-There are no package dependencies and no account, livestream, AI provider, or external service is required.
+There are no package dependencies, and passthrough/deterministic operation requires no account, livestream, AI provider, or external service. AI Attention is an explicit opt-in that sends selected chat text to OpenAI and requires `OPENAI_API_KEY`.
 
 Local audio playback currently requires Windows PowerShell and an installed `System.Speech` voice. Speech remains off by default.
 
@@ -36,12 +36,13 @@ npm test
 npm run validate
 ```
 
-Available simulator scenarios include `quiet-chat`, `mixed-burst`, `malformed-input`, `attention-question-burst`, `attention-busy-chat`, `attention-low-information`, and `attention-mixed`:
+Available simulator scenarios include `quiet-chat`, `mixed-burst`, `malformed-input`, `attention-question-burst`, `attention-busy-chat`, `attention-low-information`, `attention-mixed`, and `attention-semantic-burst`:
 
 ```sh
 npm start -- malformed-input
 node src/cli.js malformed-input --include-raw
 node src/cli.js --scenario=attention-question-burst --attention=deterministic
+node src/cli.js --scenario=attention-semantic-burst --attention=ai
 ```
 
 Enable Windows system speech for the simulator:
@@ -95,6 +96,38 @@ LIVE_ASSISTANT_ATTENTION_VERY_BUSY_THRESHOLD
 
 Invalid values or invalid busy/threshold ordering produce a structured configuration diagnostic and retain safe defaults.
 
+## AI Attention Phase 2
+
+AI mode may group semantically equivalent viewer intents inside a bounded batch and produce a concise streamer-facing summary. It is selected explicitly with `--attention=ai` or `LIVE_ASSISTANT_ATTENTION_MODE=ai`; the default remains `passthrough`. A configured OpenAI provider uses the Responses API with strict JSON Schema output, `store: false`, no background mode, no continuation ID, and no tools. The default model is `gpt-5.6-luna` with low reasoning effort and low verbosity.
+
+```powershell
+$env:OPENAI_API_KEY = "your-key"
+node src/cli.js --dashboard --scenario=attention-semantic-burst --attention=ai
+```
+
+AI mode sends only a local item ID, normalized chat text, occurrence count, known unique-viewer count, and deterministic classification hint. It does not send canonical source IDs, user IDs, usernames, display names, avatar URLs, connector metadata, or `LiveEvent.raw`. Viewer messages are serialized as user-data input beneath fixed source-controlled instructions. The API key is used only in the Authorization header and is never stored in application config, status, diagnostics, SSE, or browser state.
+
+The batcher pre-compresses exact-normalized duplicates and returns immediately from event ingestion. Defaults are a 1,000 ms window, 20 source messages, 20 items, 6,000 characters, three waiting batches, one concurrent request, 160 summary characters, 30 requests/minute, a 6,000 ms request timeout, three failures before circuit-open, and a 30,000 ms circuit cooldown. There are no automatic retries. Timeout, HTTP/network failure, refusal, malformed or incomplete item mapping, response overflow, local budget exhaustion, pending overflow, and circuit-open state use visible `deterministic_fallback` decisions.
+
+The model supplies grouping, classification, importance, a stable reason category, and a summary. The application validates complete one-time item coverage, calculates event/viewer counts locally, applies the existing quiet/busy/very-busy threshold, formats reliable viewer counts locally, and then sends promoted candidates through the unchanged final speech policy. Model importance is not confidence, and the model cannot directly request speech.
+
+Useful AI overrides are:
+
+```text
+LIVE_ASSISTANT_AI_PROVIDER
+LIVE_ASSISTANT_AI_BATCH_WINDOW_MS
+LIVE_ASSISTANT_AI_MAX_BATCH_MESSAGES
+LIVE_ASSISTANT_AI_MAX_BATCH_CHARS
+LIVE_ASSISTANT_AI_REQUESTS_PER_MINUTE
+LIVE_ASSISTANT_AI_REQUEST_TIMEOUT_MS
+LIVE_ASSISTANT_OPENAI_MODEL
+LIVE_ASSISTANT_OPENAI_REASONING_EFFORT
+LIVE_ASSISTANT_OPENAI_BASE_URL
+OPENAI_API_KEY
+```
+
+No test, `npm run validate`, `npm run demo`, or dashboard default makes a paid request. For an offline semantic dashboard fixture, run `npm run dashboard:ai-fixture`; its results are synthetic and are not model-quality evidence.
+
 Livestream text and voice settings are never interpolated into PowerShell code. The provider starts `powershell.exe` with a fixed application-owned script and `shell: false`; Base64-encoded JSON travels through stdin. Child output is consumed and failure diagnostics are bounded.
 
 ## Local dashboard
@@ -127,10 +160,10 @@ Control POSTs require a JSON object such as `{}`. Browser requests must be same-
 
 The server defaults to loopback only. `LIVE_ASSISTANT_CONTROL_HOST` accepts only `127.0.0.1`, `localhost`, or `::1`; `LIVE_ASSISTANT_CONTROL_PORT` accepts ports `1` through `65535`. Invalid settings produce a diagnostic and use safe defaults. Ctrl+C closes the connector, speech worker and child process, HTTP listener, SSE clients, and runtime subscriptions.
 
-Event and attention list responses are capped at 200 records and ordered oldest-to-newest within the selected recent window. Status exposes attention mode, traffic level, recent chat count, pending groups, and bounded decision-history count without message text. SSE publishes safe `attention-decision` projections. The dashboard retains the canonical event feed and adds attention status, decision feed, scoring factors, source IDs, and group detail. Upstream `raw` is omitted unless `LIVE_ASSISTANT_INSPECT_RAW=true` or `--include-raw` enabled it when the process started; query parameters cannot override that policy. Livestream values and raw JSON are rendered with DOM `textContent`, and the dashboard uses a restrictive Content Security Policy with no remote scripts, fonts, analytics, or runtime dependencies.
+Event and attention list responses are capped at 200 records and ordered oldest-to-newest within the selected recent window. Status exposes attention mode, traffic level, recent chat count, pending groups, and bounded decision-history count without message text. In AI mode it also exposes sanitized provider/model/state, in-flight and pending counts, last latency, usage counters, budget state, and fallback counts—never a key or prompt. SSE publishes safe `attention-decision` and `attention-state` projections. The dashboard retains the canonical event feed and adds attention/provider status, strategy, semantic/exact group kind, importance, decision feed, scoring factors, source IDs, fallback reason, and group detail. Upstream `raw` is omitted unless `LIVE_ASSISTANT_INSPECT_RAW=true` or `--include-raw` enabled it when the process started; query parameters cannot override that policy. Livestream values and raw JSON are rendered with DOM `textContent`, and the dashboard uses a restrictive Content Security Policy with no remote scripts, fonts, analytics, or runtime dependencies.
 
 ## Current scope
 
-The foundation includes canonical events, raw and canonical simulator modes, a reconnecting native-WebSocket TikFinity adapter, unknown-event preservation, a bounded ordered bus and separate history, deterministic Attention Engine Phase 1, deterministic speech policy, a bounded provider-independent speech queue, a sequential speech worker, optional Windows local speech, a reusable application runtime, a loopback REST/SSE control plane, a static operational dashboard, structured diagnostics, and boundary-focused tests.
+The foundation includes canonical events, raw and canonical simulator modes, a reconnecting native-WebSocket TikFinity adapter, unknown-event preservation, a bounded ordered bus and separate history, deterministic Attention Phase 1, opt-in AI Attention Phase 2 with deterministic fallback, deterministic speech policy, a bounded provider-independent speech queue, a sequential speech worker, optional Windows local speech, a reusable application runtime, a loopback REST/SSE control plane, a static operational dashboard, structured diagnostics, and boundary-focused tests.
 
-TikFinity fixtures are synthetic and sanitized; field compatibility is intentionally limited to the documented semantics covered by tests. Invalid JSON and frames without a valid event name are diagnosed and skipped at the transport boundary. Windows is the only implemented audio provider. AI, cloud speech, macOS/Linux speech, persistence, OBS, public network services, and direct TikTok connectivity remain unimplemented.
+TikFinity and AI evaluation fixtures are synthetic and sanitized; field compatibility and semantic fixture output are intentionally limited to tested contracts. Invalid JSON and frames without a valid event name are diagnosed and skipped at the transport boundary. Windows is the only implemented audio provider. AI chatbot replies, persistent AI memory, embeddings, vector databases, cloud speech, macOS/Linux speech, persistence, OBS, public network services, and direct TikTok connectivity remain unimplemented.
