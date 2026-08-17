@@ -16,6 +16,32 @@ External source -> Connector -> Normalizer -> canonical LiveEvent -> LiveEventBu
 
 Each layer remains independently replaceable where practical. The application starts as one local process; distributed messaging, persistence, cloud services, and a heavyweight UI are not justified.
 
+## Application runtime and local control plane
+
+`LiveAssistantRuntime` is the single application composition used by the CLI and optional dashboard. It coordinates the connector, event bus, bounded history, deterministic speech policy, queue, worker, engine, lifecycle cancellation, status projection, and control operations. Provider parsing remains in normalizers, playback remains in speech engines, and HTTP/HTML concerns remain in adapters.
+
+```text
+TikFinity / Simulator -> LiveAssistantRuntime
+                         |-> canonical event pipeline
+                         |-> bounded speech pipeline
+                         `-> status and control projection
+                                  |
+                           LocalControlServer
+                            |-> REST snapshots/commands
+                            |-> SSE operational updates
+                            `-> same-origin static dashboard
+```
+
+The native `node:http` server binds to `127.0.0.1:4820` by default and uses `/api/v1/` as a durable local API namespace. Dashboard mode must be requested explicitly. A finite simulator completes and drains speech while its runtime history remains available; a reconnecting or unavailable TikFinity adapter does not take down the dashboard.
+
+REST exposes health, sanitized status, capped recent-event projections, and speech controls. SSE immediately sends a snapshot, then selected live-event, connector, speech, and diagnostic projections. The server subscribes once to the runtime and fans out to bounded clients. When a response reports backpressure, subsequent updates for that client are counted rather than queued; after `drain`, one `stream-gap` event instructs the browser to refetch status/history. Disconnect and shutdown remove response and runtime listeners.
+
+Pause gates the worker between utterances and stops the runtime from accepting new speech requests; chat received while paused remains in event history and is not replayed on resume. Existing waiting requests remain until resumed or explicitly cleared. Clear removes only waiting requests. Cancel-current aborts only the active engine call, after which the worker accepts future requests.
+
+The server has no wildcard CORS. Browser control commands must be same-origin, reject cross-site fetch metadata, use JSON, and fit within a 4096-byte body. Non-browser loopback tools without browser origin headers remain intentionally usable. Static responses use a restrictive CSP, `nosniff`, frame denial, and no-referrer policy. Browser code creates DOM nodes and assigns untrusted livestream values through `textContent`, never HTML parsing.
+
+Event API projections include canonical fields and a domain-owned display summary. Raw provider values are excluded unless process-level raw inspection was explicitly enabled; browser query parameters cannot elevate that policy. Public diagnostics are allowlisted projections without stack traces, chat text, environment values, or child-process output. See [ADR 0005](decisions/0005-local-control-plane.md).
+
 ## Connector layer
 
 Connectors establish and close external connections, report connection state, receive raw events, reconnect where appropriate, and surface transport errors. They do not implement speech, attention, actions, OBS behavior, or UI state.
@@ -112,7 +138,7 @@ Speech playback is off by default. The Windows engine is intentionally unsupport
 - Attention may consume canonical events, session state, queue pressure, and recent output. AI extends deterministic controls and cannot become transport infrastructure.
 - Rules/actions consume canonical events and decisions, never provider payloads.
 - OBS remains an output adapter through a future local overlay API and/or OBS WebSocket.
-- A future local API may expose health, connector status, history, simulation, configuration, overlay state, and real-time events. It must bind to `127.0.0.1` by default.
+- The local API may later add simulation, selected configuration, or overlay state without exposing runtime internals directly. It remains loopback-only by default.
 - Persistence will be selected only for a concrete settings, rules, profile, analytics, recording, or memory requirement.
 - Network connectors should use configurable bounded exponential backoff with jitter, explicit disconnect, maximum delay, healthy-reset behavior, and observable state.
 
@@ -132,5 +158,6 @@ Structured diagnostics expose connector lifecycle, normalization failures, queue
 - The initial runtime is dependency-free Node.js ESM; see [ADR 0002](decisions/0002-native-node-runtime.md).
 - TikFinity is an optional local WebSocket adapter; see [ADR 0003](decisions/0003-tikfinity-adapter.md).
 - Speech engines are replaceable, with Windows System.Speech as the first local provider; see [ADR 0004](decisions/0004-windows-system-speech-engine.md).
+- Local operations use a loopback REST/SSE control plane and same-origin static dashboard; see [ADR 0005](decisions/0005-local-control-plane.md).
 
-Frontend, desktop shell, HTTP server libraries, non-Windows TTS providers, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.
+Frontend frameworks, desktop shells, HTTP server libraries, non-Windows TTS providers, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.

@@ -31,6 +31,12 @@ export const DEFAULT_CONFIG = Object.freeze({
       volume: 100,
     }),
   }),
+  controlServer: Object.freeze({
+    host: "127.0.0.1",
+    port: 4820,
+    maxBodyBytes: 4096,
+    maxSseClients: 32,
+  }),
   inspector: Object.freeze({ includeRaw: false }),
 });
 
@@ -43,6 +49,7 @@ const POSITIVE_INTEGER_FIELDS = [
   ["LIVE_ASSISTANT_DUPLICATE_WINDOW_MS", "speechPolicy", "duplicateWindowMs"],
   ["LIVE_ASSISTANT_USER_COOLDOWN_MS", "speechPolicy", "perUserCooldownMs"],
   ["LIVE_ASSISTANT_MAX_MESSAGE_LENGTH", "speechPolicy", "maxMessageLength"],
+  ["LIVE_ASSISTANT_CONTROL_PORT", "controlServer", "port"],
 ];
 
 const BOOLEAN_FIELDS = [
@@ -101,6 +108,7 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
       ...DEFAULT_CONFIG.speechEngine,
       windows: { ...DEFAULT_CONFIG.speechEngine.windows },
     },
+    controlServer: { ...DEFAULT_CONFIG.controlServer },
     inspector: { ...DEFAULT_CONFIG.inspector },
   };
 
@@ -157,6 +165,17 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
   if (url !== undefined) {
     if (validWebSocketUrl(url)) config.tikfinity.url = url;
     else invalid(onDiagnostic, "LIVE_ASSISTANT_TIKFINITY_URL", url, config.tikfinity.url);
+  }
+
+  const controlHost = environment.LIVE_ASSISTANT_CONTROL_HOST;
+  if (controlHost !== undefined) {
+    if (["127.0.0.1", "localhost", "::1"].includes(controlHost)) config.controlServer.host = controlHost;
+    else invalid(onDiagnostic, "LIVE_ASSISTANT_CONTROL_HOST", controlHost, config.controlServer.host);
+  }
+
+  if (config.controlServer.port > 65_535) {
+    invalid(onDiagnostic, "LIVE_ASSISTANT_CONTROL_PORT", config.controlServer.port, DEFAULT_CONFIG.controlServer.port);
+    config.controlServer.port = DEFAULT_CONFIG.controlServer.port;
   }
 
   if (config.tikfinity.reconnect.maxDelayMs < config.tikfinity.reconnect.initialDelayMs) {

@@ -97,3 +97,22 @@ test("empty numeric speech settings do not become zero implicitly", () => {
   assert.equal(config.speechEngine.windows.volume, 100);
   assert.equal(diagnostics.length, 2);
 });
+
+test("loads loopback control server configuration", () => {
+  const config = loadConfig({
+    LIVE_ASSISTANT_CONTROL_HOST: "localhost",
+    LIVE_ASSISTANT_CONTROL_PORT: "4912",
+  });
+  assert.equal(config.controlServer.host, "localhost");
+  assert.equal(config.controlServer.port, 4912);
+});
+
+test("rejects non-loopback control hosts and invalid ports", () => {
+  const diagnostics = [];
+  const config = loadConfig({
+    LIVE_ASSISTANT_CONTROL_HOST: "0.0.0.0",
+    LIVE_ASSISTANT_CONTROL_PORT: "70000",
+  }, (value) => diagnostics.push(value));
+  assert.deepEqual(config.controlServer, DEFAULT_CONFIG.controlServer);
+  assert.equal(diagnostics.length, 2);
+});

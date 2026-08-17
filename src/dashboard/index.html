@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live Assistant</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">Local control plane</p>
+      <h1>Live Assistant</h1>
+    </div>
+    <div id="runtime-state" class="state-pill">Loading…</div>
+  </header>
+  <main>
+    <section class="status-grid" aria-label="Runtime status">
+      <article class="card">
+        <h2>Connector</h2>
+        <dl id="connector-status"></dl>
+      </article>
+      <article class="card">
+        <h2>Speech</h2>
+        <dl id="speech-status"></dl>
+        <div class="controls">
+          <button id="pause-speech">Pause</button>
+          <button id="resume-speech">Resume</button>
+          <button id="cancel-speech">Cancel current</button>
+          <button id="clear-speech">Clear queue</button>
+        </div>
+      </article>
+    </section>
+    <section class="workspace">
+      <article class="card event-card">
+        <div class="section-heading">
+          <h2>Recent events</h2>
+          <span id="stream-state">Connecting…</span>
+        </div>
+        <ol id="event-feed" class="event-feed"></ol>
+      </article>
+      <aside class="side-column">
+        <article class="card">
+          <h2>Event detail</h2>
+          <pre id="event-detail">Select an event.</pre>
+        </article>
+        <article class="card">
+          <h2>Diagnostics</h2>
+          <ol id="diagnostics" class="diagnostics"></ol>
+        </article>
+      </aside>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>

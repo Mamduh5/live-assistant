@@ -1,4 +1,6 @@
 export { DEFAULT_CONFIG, loadConfig } from "./config/defaults.js";
+export { LocalControlServer } from "./control/local-control-server.js";
+export { SseBroker } from "./control/sse-broker.js";
 export {
   RawSimulatorConnector,
   RAW_SIMULATOR_SCENARIOS,
@@ -16,8 +18,10 @@ export {
   createUnknownEvent,
 } from "./events/live-event.js";
 export { inspectEvent } from "./inspection/event-inspector.js";
+export { projectEvent, summarizeEvent } from "./inspection/event-projection.js";
 export { createJsonLogger } from "./logging/json-logger.js";
 export { runConnector } from "./live/run-connector.js";
+export { LiveAssistantRuntime, RuntimeControlError } from "./live/live-assistant-runtime.js";
 export { normalizeRawSimulatorPayload } from "./normalization/raw-simulator-normalizer.js";
 export { normalizeTikFinityEnvelope } from "./normalization/tikfinity-normalizer.js";
 export { DeterministicSpeechPolicy } from "./speech/deterministic-speech-policy.js";

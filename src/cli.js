@@ -1,20 +1,14 @@
 #!/usr/bin/env node
 import {
-  DeterministicSpeechPolicy,
-  EventHistory,
-  LiveEventBus,
+  LiveAssistantRuntime,
+  LocalControlServer,
   SIMULATOR_SCENARIOS,
   SimulatorConnector,
-  SpeechQueue,
-  SpeechWorker,
   TikFinityConnector,
-  createSpeechEngine,
   createJsonLogger,
-  inspectEvent,
   loadConfig,
   normalizeTikFinityEnvelope,
   resolveSpeechEngineType,
-  runConnector,
 } from "./index.js";
 
 function option(name) {
@@ -31,11 +25,12 @@ function positionalScenario() {
 }
 
 const logger = createJsonLogger();
-const diagnostics = (diagnostic) => logger.warn(diagnostic.code, diagnostic);
-const config = loadConfig(process.env, diagnostics);
+const configDiagnostics = (diagnostic) => logger.warn(diagnostic.code, diagnostic);
+const config = loadConfig(process.env, configDiagnostics);
 const connectorChoice = option("--connector") ?? "simulator";
 const scenario = option("--scenario") ?? positionalScenario() ?? "quiet-chat";
 const includeRaw = config.inspector.includeRaw || process.argv.includes("--include-raw");
+const dashboardEnabled = process.argv.includes("--dashboard");
 let speechEngineType;
 
 try {
@@ -51,6 +46,8 @@ try {
 
 let connector;
 let normalize;
+let runtimeDiagnostic = configDiagnostics;
+const relayDiagnostic = (diagnostic) => runtimeDiagnostic(diagnostic);
 
 if (connectorChoice === "simulator") {
   if (!Object.hasOwn(SIMULATOR_SCENARIOS, scenario)) {
@@ -60,10 +57,7 @@ if (connectorChoice === "simulator") {
     connector = new SimulatorConnector({ scenario });
   }
 } else if (connectorChoice === "tikfinity") {
-  connector = new TikFinityConnector({
-    ...config.tikfinity,
-    onDiagnostic: diagnostics,
-  });
+  connector = new TikFinityConnector({ ...config.tikfinity, onDiagnostic: relayDiagnostic });
   normalize = normalizeTikFinityEnvelope;
 } else {
   logger.error("cli.invalid_connector", {
@@ -74,58 +68,59 @@ if (connectorChoice === "simulator") {
 }
 
 if (connector && speechEngineType) {
-  const bus = new LiveEventBus({ ...config.eventBus, onDiagnostic: diagnostics });
-  const history = new EventHistory(config.eventHistory);
-  const speechPolicy = new DeterministicSpeechPolicy(config.speechPolicy);
-  const speechQueue = new SpeechQueue({ ...config.speechQueue, onDiagnostic: diagnostics });
-  const speechEngine = createSpeechEngine({ type: speechEngineType, config: config.speechEngine });
-  const abortController = new AbortController();
-  const speechWorker = speechEngine
-    ? new SpeechWorker({ queue: speechQueue, engine: speechEngine, onDiagnostic: diagnostics })
-    : null;
+  const runtime = new LiveAssistantRuntime({
+    config,
+    connector,
+    ...(normalize ? { normalize } : {}),
+    speechEngineType,
+    logger,
+    includeRaw,
+  });
+  runtimeDiagnostic = (diagnostic) => runtime.reportDiagnostic(diagnostic);
+  let controlServer;
+  let releaseDashboard;
+  const dashboardLifetime = new Promise((resolve) => { releaseDashboard = resolve; });
   const stop = () => {
-    abortController.abort();
-    void connector.close();
+    releaseDashboard();
+    void controlServer?.stop();
+    void runtime.stop();
   };
 
-  bus.subscribe((event) => history.record(event));
-  bus.subscribe((event) => {
-    const decision = speechPolicy.evaluate(event, { queuePressure: speechQueue.pressure });
-    const actionResult = decision.action === "queue_speech"
-      ? speechQueue.enqueue(decision.request)
-      : { accepted: false, reason: decision.reason };
-    logger.info("event.inspected", inspectEvent(event, decision, { includeRaw, actionResult }));
-  });
-
   process.once("SIGINT", stop);
-  speechWorker?.run(abortController.signal);
   try {
-    const result = await runConnector({
-      connector,
-      ...(normalize ? { normalize } : {}),
-      bus,
-      signal: abortController.signal,
-      logger,
-    });
-    let speechResult;
-    if (speechWorker) {
-      speechResult = await (abortController.signal.aborted ? speechWorker.cancel() : speechWorker.drain());
+    runtime.start();
+    if (dashboardEnabled) {
+      controlServer = new LocalControlServer({
+        runtime,
+        ...config.controlServer,
+        onDiagnostic: (diagnostic) => runtime.reportDiagnostic(diagnostic),
+      });
+      try {
+        const url = await controlServer.start();
+        logger.info("dashboard.available", { url });
+      } catch (error) {
+        logger.error("control_server.failed", { error: error instanceof Error ? error.message : String(error) });
+        process.exitCode = 1;
+        await runtime.stop();
+        releaseDashboard();
+      }
+      await dashboardLifetime;
     } else {
-      speechQueue.close();
-      speechResult = { status: "off", completed: 0, failed: 0 };
+      const result = await runtime.waitForCompletion();
+      const status = runtime.getStatus();
+      logger.info("pipeline.completed", {
+        connectorStatus: result.connector.status,
+        historySize: status.events.historySize,
+        speechQueueSize: status.speech.queueSize,
+        speechEngine: status.speech.configuredEngine,
+        speechStatus: result.speech.status,
+        speechCompleted: result.speech.completed,
+        speechFailed: result.speech.failed,
+      });
     }
-    logger.info("pipeline.completed", {
-      connectorStatus: result.status,
-      historySize: history.size,
-      speechQueueSize: speechQueue.size,
-      speechEngine: speechEngineType,
-      speechStatus: speechResult.status,
-      speechCompleted: speechResult.completed,
-      speechFailed: speechResult.failed,
-    });
   } finally {
     process.removeListener("SIGINT", stop);
-    if (speechWorker && !speechQueue.closed) await speechWorker.cancel();
-    await connector.close();
+    await controlServer?.stop();
+    await runtime.stop();
   }
 }

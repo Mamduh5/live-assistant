@@ -133,3 +133,58 @@ test("stops cleanly after a permanent engine failure", async () => {
   assert.equal(queue.closed, true);
   assert.equal(queue.size, 0);
 });
+
+test("pauses between utterances and resumes without overlap", async () => {
+  const queue = new SpeechQueue({ maxQueue: 4 });
+  const first = deferred();
+  const calls = [];
+  const engine = {
+    speak(text) {
+      calls.push(text);
+      return calls.length === 1 ? first.promise : Promise.resolve();
+    },
+    async close() {},
+  };
+  queue.enqueue(request("a"));
+  queue.enqueue(request("b"));
+  const worker = new SpeechWorker({ queue, engine });
+  worker.run();
+  await until(() => calls.length === 1);
+  assert.equal(worker.pause(), true);
+  first.resolve();
+  await until(() => worker.getStatus().state === "paused");
+  assert.deepEqual(calls, ["text-a"]);
+  assert.equal(worker.resume(), true);
+  await until(() => calls.length === 2);
+  queue.close();
+  await worker.close();
+});
+
+test("cancel-current aborts one utterance and keeps the worker reusable", async () => {
+  const queue = new SpeechQueue({ maxQueue: 4 });
+  const calls = [];
+  const engine = {
+    speak(text, { signal }) {
+      calls.push(text);
+      if (text !== "text-a") return Promise.resolve();
+      return new Promise((resolve, reject) => signal.addEventListener(
+        "abort",
+        () => reject(new DOMException("cancelled", "AbortError")),
+        { once: true },
+      ));
+    },
+    async close() {},
+  };
+  queue.enqueue(request("a"));
+  queue.enqueue(request("b"));
+  const worker = new SpeechWorker({ queue, engine });
+  worker.run();
+  await until(() => worker.getStatus().currentRequestId === "a");
+  assert.equal(worker.cancelCurrent(), true);
+  await until(() => calls.length === 2);
+  assert.equal(worker.getStatus().state, "idle");
+  queue.close();
+  const result = await worker.close();
+  assert.equal(result.completed, 1);
+  assert.deepEqual(calls, ["text-a", "text-b"]);
+});

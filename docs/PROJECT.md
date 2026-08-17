@@ -20,9 +20,9 @@ Live platforms
 
 ## Initial development loop
 
-The foundation provides a path from simulator or TikFinity events through bounded history and deterministic speech policy to a bounded queue, sequential speech worker, and optional Windows local audio. Both inputs use the same canonical consumers without changing the domain model.
+The foundation provides a path from simulator or TikFinity events through bounded history and deterministic speech policy to a bounded queue, sequential speech worker, and optional Windows local audio. A reusable runtime now coordinates those components and projects bounded status, event history, diagnostics, and speech controls to an optional loopback REST/SSE server and static browser dashboard. Both inputs use the same canonical consumers without changing the domain model.
 
-Future vertical slices may add other replaceable speech engines. AI, OBS, a visual UI, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the current foundation.
+Future vertical slices may add other replaceable speech engines or richer local integrations. AI, OBS, persistent settings, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the current foundation.
 
 ## Success criteria
 

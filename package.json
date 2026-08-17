@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/cli.js",
     "demo": "node src/cli.js --scenario mixed-burst",
+    "dashboard": "node src/cli.js --dashboard",
     "check": "node scripts/check-syntax.js",
     "test": "node --test --experimental-test-isolation=none",
     "validate": "npm run check && npm test"

@@ -12,6 +12,10 @@ SimulatorConnector -> canonical LiveEvent -> bounded LiveEventBus
 
 TikFinity Desktop -> TikFinityConnector -> TikFinityNormalizer
                                        -> the same LiveEventBus and consumers
+
+TikFinity / Simulator -> LiveAssistantRuntime -> local control server
+                                             |-> REST + SSE
+                                             `-> browser dashboard
 ```
 
 ## Requirements
@@ -62,8 +66,39 @@ Speech requests remain FIFO. The worker waits without polling, speaks one reques
 
 Livestream text and voice settings are never interpolated into PowerShell code. The provider starts `powershell.exe` with a fixed application-owned script and `shell: false`; Base64-encoded JSON travels through stdin. Child output is consumed and failure diagnostics are bounded.
 
+## Local dashboard
+
+Dashboard mode is explicit and additive. It starts a dependency-free local control server and keeps the process available until Ctrl+C:
+
+```sh
+npm run dashboard
+node src/cli.js --dashboard --scenario=quiet-chat --speech=windows
+node src/cli.js --dashboard --connector=tikfinity --speech=windows
+```
+
+Open `http://127.0.0.1:4820/`. A completed simulator scenario remains visible in event history while speech drains normally. If TikFinity is unavailable, the dashboard remains online and reports the connector's reconnecting state.
+
+The versioned API provides:
+
+```text
+GET  /api/v1/health
+GET  /api/v1/status
+GET  /api/v1/events?limit=100
+GET  /api/v1/stream
+POST /api/v1/speech/pause
+POST /api/v1/speech/resume
+POST /api/v1/speech/clear
+POST /api/v1/speech/cancel-current
+```
+
+Control POSTs require a JSON object such as `{}`. Browser requests must be same-origin; wildcard CORS is not enabled. Request bodies are limited to 4096 bytes. SSE sends an initial snapshot and selected operational updates. A backpressured client stops receiving updates until `drain`, then receives `stream-gap` and refetches snapshots/history rather than accumulating an application-level buffer.
+
+The server defaults to loopback only. `LIVE_ASSISTANT_CONTROL_HOST` accepts only `127.0.0.1`, `localhost`, or `::1`; `LIVE_ASSISTANT_CONTROL_PORT` accepts ports `1` through `65535`. Invalid settings produce a diagnostic and use safe defaults. Ctrl+C closes the connector, speech worker and child process, HTTP listener, SSE clients, and runtime subscriptions.
+
+Event list responses are capped at 200 records and ordered oldest-to-newest within the selected recent window. Upstream `raw` is omitted unless `LIVE_ASSISTANT_INSPECT_RAW=true` or `--include-raw` enabled it when the process started; query parameters cannot override that policy. Livestream values and raw JSON are rendered with DOM `textContent`, and the dashboard uses a restrictive Content Security Policy with no remote scripts, fonts, analytics, or runtime dependencies.
+
 ## Current scope
 
-The foundation includes canonical events, raw and canonical simulator modes, a reconnecting native-WebSocket TikFinity adapter, unknown-event preservation, a bounded ordered bus and separate history, deterministic speech policy, a bounded provider-independent speech queue, a sequential speech worker, optional Windows local speech, structured diagnostics, and boundary-focused tests.
+The foundation includes canonical events, raw and canonical simulator modes, a reconnecting native-WebSocket TikFinity adapter, unknown-event preservation, a bounded ordered bus and separate history, deterministic speech policy, a bounded provider-independent speech queue, a sequential speech worker, optional Windows local speech, a reusable application runtime, a loopback REST/SSE control plane, a static operational dashboard, structured diagnostics, and boundary-focused tests.
 
-TikFinity fixtures are synthetic and sanitized; field compatibility is intentionally limited to the documented semantics covered by tests. Invalid JSON and frames without a valid event name are diagnosed and skipped at the transport boundary. Windows is the only implemented audio provider. AI, cloud speech, macOS/Linux speech, a UI, persistence, OBS, public network services, and direct TikTok connectivity remain unimplemented.
+TikFinity fixtures are synthetic and sanitized; field compatibility is intentionally limited to the documented semantics covered by tests. Invalid JSON and frames without a valid event name are diagnosed and skipped at the transport boundary. Windows is the only implemented audio provider. AI, cloud speech, macOS/Linux speech, persistence, OBS, public network services, and direct TikTok connectivity remain unimplemented.
