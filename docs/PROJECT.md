@@ -20,9 +20,9 @@ Live platforms
 
 ## Initial development loop
 
-The first foundation provides an offline path from a simulator through canonical events to bounded history, deterministic speech policy, a bounded speech queue, and an event inspector. This validates the replaceable boundaries and creates a development loop that needs no real livestream.
+The foundation provides an offline path from a simulator through canonical events to bounded history, deterministic speech policy, a bounded speech queue, and an event inspector. An optional TikFinity connector now supplies real TikTok LIVE input through the same consumers without changing the domain model.
 
-Future vertical slices may add a replaceable local speech engine and, once a concrete protocol contract and sanitized fixtures are available, an optional TikFinity adapter. AI, OBS, a visual UI, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the initial foundation.
+Future vertical slices may add a replaceable local speech engine. AI, OBS, a visual UI, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the current foundation.
 
 ## Success criteria
 

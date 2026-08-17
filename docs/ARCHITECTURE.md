@@ -20,7 +20,11 @@ Each layer remains independently replaceable where practical. The application st
 
 Connectors establish and close external connections, report connection state, receive raw events, reconnect where appropriate, and surface transport errors. They do not implement speech, attention, actions, OBS behavior, or UI state.
 
-Potential implementations include TikFinity, direct TikTok, YouTube Live, Twitch, and simulator connectors. Direct TikTok transport is not selected. A TikFinity connector is deferred until its concrete local transport contract and sanitized payload fixtures are available.
+Implemented inputs are the simulator and the optional TikFinity Desktop adapter. Direct TikTok, YouTube Live, and Twitch transports are not selected.
+
+`TikFinityConnector` uses Node's native WebSocket client to connect to `ws://127.0.0.1:21213/` by default. It owns JSON framing, top-level envelope validation, lifecycle state, cancellation, and reconnect scheduling. Unexpected failure uses configurable exponential backoff with bounded jitter; a successful connection resets the delay. Explicit close or abort stops the socket and all reconnect attempts. TikFinity being unavailable is an observable offline state, not an application-fatal error.
+
+Invalid JSON and objects without a non-empty `event` name are diagnosed and skipped at the transport boundary. They cannot be meaningfully normalized as TikFinity envelopes and are not logged as raw text. Every valid envelope is passed to `TikFinityNormalizer`, even when its `data` is missing or malformed.
 
 The simulator is first-class and has two distinct modes:
 
@@ -32,6 +36,8 @@ Both report lifecycle state and support cancellation. The canonical simulator en
 ## Normalization layer
 
 Each real connector has its own normalizer. A normalizer owns provider-field extraction and converts exactly one upstream payload into one canonical event. Unsupported or malformed input becomes `platform.unknown`; it is never silently discarded. The complete input remains in `raw`.
+
+`TikFinityNormalizer` maps `chat`, `gift`, `share`, `follow`, `like`, `roomUser`, and `subscribe` into the existing canonical namespace. It preserves the complete `{ event, data }` envelope as `raw`. Gift repeat updates describe upstream streak state but are not aggregated into transactions. Unsupported event names and recognized events with invalid required data remain distinguishable unknown events.
 
 Normalization reports what the upstream event represents. Aggregation—especially gift streak completion—is a later session/domain responsibility.
 
@@ -116,6 +122,6 @@ Structured diagnostics expose connector lifecycle, normalization failures, queue
 - OBS is an adapter.
 - Configuration is centralized and validated at startup.
 - The initial runtime is dependency-free Node.js ESM; see [ADR 0002](decisions/0002-native-node-runtime.md).
+- TikFinity is an optional local WebSocket adapter; see [ADR 0003](decisions/0003-tikfinity-adapter.md).
 
 Frontend, desktop shell, HTTP/WebSocket libraries, TTS provider, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.
-

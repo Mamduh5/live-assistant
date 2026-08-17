@@ -27,3 +27,32 @@ test("enables explicit raw payload inspection", () => {
   const config = loadConfig({ LIVE_ASSISTANT_INSPECT_RAW: "true" });
   assert.equal(config.inspector.includeRaw, true);
 });
+
+test("loads validated TikFinity endpoint and reconnect overrides", () => {
+  const config = loadConfig({
+    LIVE_ASSISTANT_TIKFINITY_URL: "ws://127.0.0.1:3000/events",
+    LIVE_ASSISTANT_TIKFINITY_RECONNECT_INITIAL_MS: "25",
+    LIVE_ASSISTANT_TIKFINITY_RECONNECT_MAX_MS: "500",
+    LIVE_ASSISTANT_TIKFINITY_RECONNECT_MULTIPLIER: "1.5",
+    LIVE_ASSISTANT_TIKFINITY_RECONNECT_JITTER_RATIO: "0.1",
+  });
+  assert.equal(config.tikfinity.url, "ws://127.0.0.1:3000/events");
+  assert.deepEqual(config.tikfinity.reconnect, {
+    initialDelayMs: 25,
+    maxDelayMs: 500,
+    multiplier: 1.5,
+    jitterRatio: 0.1,
+  });
+});
+
+test("falls back safely for invalid TikFinity configuration", () => {
+  const diagnostics = [];
+  const config = loadConfig({
+    LIVE_ASSISTANT_TIKFINITY_URL: "https://public.example.invalid",
+    LIVE_ASSISTANT_TIKFINITY_RECONNECT_INITIAL_MS: "20000",
+    LIVE_ASSISTANT_TIKFINITY_RECONNECT_MAX_MS: "100",
+    LIVE_ASSISTANT_TIKFINITY_RECONNECT_JITTER_RATIO: "2",
+  }, (value) => diagnostics.push(value));
+  assert.deepEqual(config.tikfinity, DEFAULT_CONFIG.tikfinity);
+  assert.equal(diagnostics.length, 3);
+});

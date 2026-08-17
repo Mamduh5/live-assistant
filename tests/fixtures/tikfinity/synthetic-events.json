@@ -1,0 +1,98 @@
+{
+  "chat": {
+    "event": "chat",
+    "data": {
+      "comment": "Synthetic hello",
+      "userId": "synthetic-user-1",
+      "uniqueId": "synthetic_viewer",
+      "nickname": "Synthetic Viewer",
+      "profilePictureUrl": "https://example.invalid/synthetic-avatar.png",
+      "isFollower": true,
+      "isSubscriber": false,
+      "isModerator": false,
+      "timestamp": "2026-01-02T03:04:05.000Z"
+    }
+  },
+  "giftOneOff": {
+    "event": "gift",
+    "data": {
+      "giftId": 1001,
+      "giftName": "Synthetic Rose",
+      "repeatCount": 1,
+      "diamondCount": 1
+    }
+  },
+  "giftStreakUpdate": {
+    "event": "gift",
+    "data": {
+      "giftId": "1002",
+      "name": "Synthetic Streak Gift",
+      "repeatCount": 3,
+      "repeatEnd": false
+    }
+  },
+  "giftStreakCompletion": {
+    "event": "gift",
+    "data": {
+      "giftId": "1002",
+      "giftName": "Synthetic Streak Gift",
+      "repeatCount": 5,
+      "repeatEnd": true
+    }
+  },
+  "follow": {
+    "event": "follow",
+    "data": {
+      "userId": "synthetic-user-2",
+      "uniqueId": "synthetic_follower",
+      "nickname": "Synthetic Follower"
+    }
+  },
+  "share": {
+    "event": "share",
+    "data": {
+      "userId": "synthetic-user-3"
+    }
+  },
+  "like": {
+    "event": "like",
+    "data": {
+      "userId": "synthetic-user-4",
+      "likeCount": 7,
+      "totalLikeCount": 700
+    }
+  },
+  "roomUser": {
+    "event": "roomUser",
+    "data": {
+      "viewerCount": 321
+    }
+  },
+  "subscribe": {
+    "event": "subscribe",
+    "data": {
+      "userId": "synthetic-user-5",
+      "uniqueId": "synthetic_subscriber"
+    }
+  },
+  "unknown": {
+    "event": "syntheticFutureEvent",
+    "data": {
+      "syntheticProperty": true
+    }
+  },
+  "malformedChat": {
+    "event": "chat",
+    "data": {
+      "comment": 42
+    }
+  },
+  "malformedGift": {
+    "event": "gift",
+    "data": {
+      "giftName": "Synthetic Broken Gift",
+      "repeatCount": "many",
+      "repeatEnd": false
+    }
+  }
+}
