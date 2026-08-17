@@ -31,19 +31,33 @@
           <button id="clear-speech">Clear queue</button>
         </div>
       </article>
+      <article class="card">
+        <h2>Attention</h2>
+        <dl id="attention-status"></dl>
+      </article>
     </section>
     <section class="workspace">
-      <article class="card event-card">
-        <div class="section-heading">
-          <h2>Recent events</h2>
-          <span id="stream-state">Connecting…</span>
-        </div>
-        <ol id="event-feed" class="event-feed"></ol>
-      </article>
+      <div class="feed-column">
+        <article class="card event-card">
+          <div class="section-heading">
+            <h2>Recent events</h2>
+            <span id="stream-state">Connecting…</span>
+          </div>
+          <ol id="event-feed" class="event-feed"></ol>
+        </article>
+        <article class="card attention-card">
+          <h2>Attention decisions</h2>
+          <ol id="attention-feed" class="attention-feed"></ol>
+        </article>
+      </div>
       <aside class="side-column">
         <article class="card">
           <h2>Event detail</h2>
           <pre id="event-detail">Select an event.</pre>
+        </article>
+        <article class="card">
+          <h2>Attention detail</h2>
+          <pre id="attention-detail">Select an attention decision.</pre>
         </article>
         <article class="card">
           <h2>Diagnostics</h2>

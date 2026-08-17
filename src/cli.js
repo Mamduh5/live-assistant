@@ -9,6 +9,7 @@ import {
   loadConfig,
   normalizeTikFinityEnvelope,
   resolveSpeechEngineType,
+  resolveAttentionMode,
 } from "./index.js";
 
 function option(name) {
@@ -32,6 +33,7 @@ const scenario = option("--scenario") ?? positionalScenario() ?? "quiet-chat";
 const includeRaw = config.inspector.includeRaw || process.argv.includes("--include-raw");
 const dashboardEnabled = process.argv.includes("--dashboard");
 let speechEngineType;
+let attentionMode;
 
 try {
   speechEngineType = resolveSpeechEngineType(option("--speech"), config.speechEngine.type);
@@ -39,6 +41,17 @@ try {
   logger.error("cli.invalid_speech_engine", {
     speechEngine: option("--speech"),
     availableSpeechEngines: ["off", "windows"],
+    error: error.message,
+  });
+  process.exitCode = 1;
+}
+
+try {
+  attentionMode = resolveAttentionMode(option("--attention"), config.attention.mode);
+} catch (error) {
+  logger.error("cli.invalid_attention_mode", {
+    attentionMode: option("--attention"),
+    availableAttentionModes: ["passthrough", "deterministic"],
     error: error.message,
   });
   process.exitCode = 1;
@@ -67,7 +80,7 @@ if (connectorChoice === "simulator") {
   process.exitCode = 1;
 }
 
-if (connector && speechEngineType) {
+if (connector && speechEngineType && attentionMode) {
   const runtime = new LiveAssistantRuntime({
     config,
     connector,
@@ -75,6 +88,7 @@ if (connector && speechEngineType) {
     speechEngineType,
     logger,
     includeRaw,
+    attentionMode,
   });
   runtimeDiagnostic = (diagnostic) => runtime.reportDiagnostic(diagnostic);
   let controlServer;
@@ -116,6 +130,8 @@ if (connector && speechEngineType) {
         speechStatus: result.speech.status,
         speechCompleted: result.speech.completed,
         speechFailed: result.speech.failed,
+        attentionMode: status.attention.mode,
+        attentionDecisions: status.attention.decisionHistorySize,
       });
     }
   } finally {

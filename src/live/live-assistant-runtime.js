@@ -7,6 +7,8 @@ import { createSpeechEngine } from "../speech/create-speech-engine.js";
 import { SpeechQueue } from "../speech/speech-queue.js";
 import { SpeechWorker } from "../speech/speech-worker.js";
 import { runConnector } from "./run-connector.js";
+import { AttentionEngine } from "../attention/attention-engine.js";
+import { projectAttentionDecision } from "../inspection/attention-projection.js";
 
 const MAX_API_EVENTS = 200;
 const MAX_DIAGNOSTICS = 50;
@@ -56,6 +58,8 @@ export class LiveAssistantRuntime {
   #clock;
   #bus;
   #history;
+  #attention;
+  #attentionOutcomes = new Map();
   #speechPolicy;
   #speechQueue;
   #speechEngineType;
@@ -84,6 +88,9 @@ export class LiveAssistantRuntime {
     includeRaw = config.inspector.includeRaw,
     clock = Date.now,
     drainSpeechOnConnectorCompletion = connector.name === "simulator",
+    attentionMode = config.attention.mode,
+    attentionEngine,
+    attentionDependencies = {},
   }) {
     if (!connector || typeof connector.events !== "function" || typeof connector.close !== "function") {
       throw new TypeError("LiveAssistantRuntime requires a connector");
@@ -99,6 +106,13 @@ export class LiveAssistantRuntime {
 
     this.#bus = new LiveEventBus({ ...config.eventBus, onDiagnostic: (value) => this.reportDiagnostic(value) });
     this.#history = new EventHistory(config.eventHistory);
+    this.#attention = attentionEngine ?? new AttentionEngine({
+      config: config.attention,
+      mode: attentionMode,
+      clock,
+      onDiagnostic: (value) => this.reportDiagnostic(value),
+      ...attentionDependencies,
+    });
     this.#speechPolicy = new DeterministicSpeechPolicy(config.speechPolicy);
     this.#speechQueue = new SpeechQueue({ ...config.speechQueue, onDiagnostic: (value) => this.reportDiagnostic(value) });
     const engine = speechEngine === undefined
@@ -109,6 +123,7 @@ export class LiveAssistantRuntime {
       : null;
 
     this.#unsubscribers.push(this.#bus.subscribe((event) => this.#handleEvent(event)));
+    this.#unsubscribers.push(this.#attention.subscribe((decision) => this.#handleAttentionDecision(decision)));
     if (typeof connector.subscribeState === "function") {
       this.#unsubscribers.push(connector.subscribeState((state) => {
         this.#connectorState = state;
@@ -143,6 +158,7 @@ export class LiveAssistantRuntime {
       logger: this.#logger,
     });
     this.#connectorResult = result;
+    if (!this.#abortController.signal.aborted) await this.#attention.flush();
     if (this.#drainSpeechOnConnectorCompletion && !this.#abortController.signal.aborted) {
       this.#speechResult = this.#speechWorker
         ? await this.#speechWorker.drain()
@@ -177,6 +193,7 @@ export class LiveAssistantRuntime {
     } catch {
       this.reportDiagnostic({ code: "connector.close_failed", connector: this.#connector.name });
     }
+    await this.#attention.close();
     if (this.#speechWorker) this.#speechResult = await this.#speechWorker.cancel();
     else this.#speechQueue.close();
     if (this.#connectorPromise) await this.#connectorPromise;
@@ -188,6 +205,7 @@ export class LiveAssistantRuntime {
 
   pauseSpeech() {
     const worker = this.#requireSpeech();
+    this.#attention.suppressPendingSpeech();
     worker.pause();
     return this.getStatus().speech;
   }
@@ -244,6 +262,7 @@ export class LiveAssistantRuntime {
         } : {}),
       },
       events: { historySize: this.#history.size, rawInspectionEnabled: this.#includeRaw },
+      attention: this.#attention.getStatus(),
     };
   }
 
@@ -258,10 +277,18 @@ export class LiveAssistantRuntime {
     return this.#diagnostics.slice(-Math.min(limit, MAX_DIAGNOSTICS)).map((item) => ({ ...item }));
   }
 
+  getRecentAttention({ limit = 100 } = {}) {
+    if (!Number.isSafeInteger(limit) || limit < 0) throw new RangeError("Attention limit must be a non-negative integer");
+    return this.#attention.getRecentDecisions({ limit: Math.min(limit, 200) }).map((decision) => projectAttentionDecision(decision, {
+      speech: this.#attentionOutcomes.get(decision.id),
+    }));
+  }
+
   getSnapshot() {
     return {
       status: this.getStatus(),
       events: this.getRecentEvents({ limit: 100 }),
+      attention: this.getRecentAttention({ limit: 100 }),
       diagnostics: this.getRecentDiagnostics(),
     };
   }
@@ -285,23 +312,46 @@ export class LiveAssistantRuntime {
 
   #handleEvent(event) {
     this.#history.record(event);
-    let decision;
-    let actionResult;
+    this.#emit("live-event", projectEvent(event, { includeRaw: this.#includeRaw }));
     const paused = this.#speechWorker?.getStatus().paused === true;
-    if (!this.#speechWorker) {
-      decision = { action: "ignore", priority: 0, reason: "speech_off" };
+    const attentionDecision = this.#attention.observe(event, {
+      speechEligible: Boolean(this.#speechWorker) && !paused,
+    });
+    const inspectionDecision = attentionDecision
+      ? { action: attentionDecision.action, priority: attentionDecision.priority, reason: attentionDecision.reason }
+      : { action: "defer", priority: 0, reason: "attention_group_pending" };
+    this.#logger.info("event.inspected", inspectEvent(event, inspectionDecision, { includeRaw: this.#includeRaw }));
+    this.#emit("speech-state", this.getStatus().speech);
+  }
+
+  #handleAttentionDecision(decision) {
+    let speechDecision;
+    let actionResult;
+    if (decision.action !== "promote" || !decision.candidate) {
+      actionResult = { accepted: false, reason: "attention_ignored" };
+    } else if (!this.#speechWorker) {
       actionResult = { accepted: false, reason: "speech_off" };
-    } else if (paused) {
-      decision = { action: "ignore", priority: 0, reason: "speech_paused" };
+    } else if (!decision.candidate.speechEligible || this.#speechWorker.getStatus().paused) {
       actionResult = { accepted: false, reason: "speech_paused" };
     } else {
-      decision = this.#speechPolicy.evaluate(event, { queuePressure: this.#speechQueue.pressure });
-      actionResult = decision.action === "queue_speech"
-        ? this.#speechQueue.enqueue(decision.request)
-        : { accepted: false, reason: decision.reason };
+      speechDecision = this.#speechPolicy.evaluateCandidate(decision.candidate, { queuePressure: this.#speechQueue.pressure });
+      actionResult = speechDecision.action === "queue_speech"
+        ? this.#speechQueue.enqueue(speechDecision.request)
+        : { accepted: false, reason: speechDecision.reason };
     }
-    this.#logger.info("event.inspected", inspectEvent(event, decision, { includeRaw: this.#includeRaw, actionResult }));
-    this.#emit("live-event", projectEvent(event, { includeRaw: this.#includeRaw }));
+    const speech = {
+      decision: speechDecision ? {
+        action: speechDecision.action,
+        priority: speechDecision.priority,
+        reason: speechDecision.reason,
+      } : null,
+      actionResult,
+    };
+    this.#attentionOutcomes.set(decision.id, speech);
+    while (this.#attentionOutcomes.size > this.#config.attention.decisionHistoryLimit) {
+      this.#attentionOutcomes.delete(this.#attentionOutcomes.keys().next().value);
+    }
+    this.#emit("attention-decision", projectAttentionDecision(decision, { speech }));
     this.#emit("speech-state", this.getStatus().speech);
   }
 

@@ -20,9 +20,11 @@ Live platforms
 
 ## Initial development loop
 
-The foundation provides a path from simulator or TikFinity events through bounded history and deterministic speech policy to a bounded queue, sequential speech worker, and optional Windows local audio. A reusable runtime now coordinates those components and projects bounded status, event history, diagnostics, and speech controls to an optional loopback REST/SSE server and static browser dashboard. Both inputs use the same canonical consumers without changing the domain model.
+The foundation provides a path from simulator or TikFinity events through bounded history, deterministic Attention Engine Phase 1, final deterministic speech policy, a bounded queue, sequential speech worker, and optional Windows local audio. A reusable runtime coordinates those components and projects bounded status, event and attention history, diagnostics, and speech controls to an optional loopback REST/SSE server and static browser dashboard. Both inputs use the same canonical consumers without changing the domain model.
 
-Future vertical slices may add other replaceable speech engines or richer local integrations. AI, OBS, persistent settings, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the current foundation.
+Deterministic attention reduces obvious noise before any external AI is introduced. It uses bounded recent-chat state, exact-normalized question groups, stable-viewer repetition, traffic-aware thresholds, and explainable scores. It emits an `AttentionDecision`, then a `SpeechCandidate`; speech policy remains the independent safety and rate-control gate. **Deterministic Attention is not semantic AI.** Textually different questions remain separate even when a person would understand them as similar.
+
+Future vertical slices may add an AI attention policy behind the same decision seam, other replaceable speech engines, or richer local integrations. LLM integration, semantic grouping/summarization, embeddings, chatbot replies, OBS, persistent settings, dynamic tuning UI, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the current foundation.
 
 ## Success criteria
 

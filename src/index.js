@@ -1,4 +1,15 @@
 export { DEFAULT_CONFIG, loadConfig } from "./config/defaults.js";
+export { AttentionEngine, resolveAttentionMode } from "./attention/attention-engine.js";
+export { AttentionAction, AttentionClassification, assertAttentionDecision, assertSpeechCandidate } from "./attention/attention-contracts.js";
+export {
+  DeterministicAttentionPolicy,
+  classifyAttentionEvent,
+  formatGroupedQuestion,
+  formatQuestionText,
+  normalizeExactQuestion,
+  speechUserId,
+  stableUserKey,
+} from "./attention/deterministic-attention-policy.js";
 export { LocalControlServer } from "./control/local-control-server.js";
 export { SseBroker } from "./control/sse-broker.js";
 export {
@@ -18,6 +29,7 @@ export {
   createUnknownEvent,
 } from "./events/live-event.js";
 export { inspectEvent } from "./inspection/event-inspector.js";
+export { projectAttentionDecision } from "./inspection/attention-projection.js";
 export { projectEvent, summarizeEvent } from "./inspection/event-projection.js";
 export { createJsonLogger } from "./logging/json-logger.js";
 export { runConnector } from "./live/run-connector.js";

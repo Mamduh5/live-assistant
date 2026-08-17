@@ -5,10 +5,12 @@ Live Assistant is a local-first foundation for turning livestream events into us
 ```text
 SimulatorConnector -> canonical LiveEvent -> bounded LiveEventBus
                                          |-> bounded EventHistory
-                                         `-> speech policy -> bounded SpeechQueue
-                                                           |-> SpeechWorker
-                                                           |    `-> optional Windows system TTS
-                                                           `-> inspector
+                                         `-> AttentionEngine -> AttentionDecision
+                                                              `-> SpeechCandidate
+                                                                   `-> final speech policy
+                                                                        `-> bounded SpeechQueue
+                                                                             `-> SpeechWorker
+                                                                                  `-> optional Windows system TTS
 
 TikFinity Desktop -> TikFinityConnector -> TikFinityNormalizer
                                        -> the same LiveEventBus and consumers
@@ -34,11 +36,12 @@ npm test
 npm run validate
 ```
 
-Available simulator scenarios are `quiet-chat`, `mixed-burst`, and `malformed-input`:
+Available simulator scenarios include `quiet-chat`, `mixed-burst`, `malformed-input`, `attention-question-burst`, `attention-busy-chat`, `attention-low-information`, and `attention-mixed`:
 
 ```sh
 npm start -- malformed-input
 node src/cli.js malformed-input --include-raw
+node src/cli.js --scenario=attention-question-burst --attention=deterministic
 ```
 
 Enable Windows system speech for the simulator:
@@ -64,6 +67,34 @@ Speech supports `LIVE_ASSISTANT_SPEECH_ENGINE=off|windows`, `LIVE_ASSISTANT_SPEE
 
 Speech requests remain FIFO. The worker waits without polling, speaks one request at a time, and isolates ordinary provider failures. A finite connector run closes the producer side and drains queued speech before exit. Ctrl+C cancels the active PowerShell child, clears remaining speech, and exits promptly.
 
+## Deterministic Attention
+
+Attention is an explicit boundary between canonical events and final speech filtering. The default `passthrough` mode preserves prior chat behavior. Select Phase 1 attention with `--attention=deterministic` or `LIVE_ASSISTANT_ATTENTION_MODE=deterministic`.
+
+Deterministic mode classifies canonical events as `question`, `message`, `low_information`, or `non_chat`; maintains recent chat bounded by both time and count; derives `quiet`, `busy`, or `very_busy` traffic; and applies explainable configured scores and traffic-dependent thresholds. Questions are grouped for a fixed 1500 ms window only when their exact-normalized text matches. Normalization uses Unicode NFKC, trimming, whitespace collapse, case folding, and repeated terminal question-mark normalization. Stable user IDs (or usernames) determine the unique-viewer bonus; unknown identities never inflate that count. A finite simulator flushes pending groups before its speech queue drains.
+
+**Deterministic Attention is not semantic AI.** For example, `What weapon are you using?` and `What sword are you using?` remain separate. There is no synonym matching, edit-distance intent guessing, LLM, embedding, or summarization model.
+
+Attention produces inspectable `AttentionDecision` records and provider-independent `SpeechCandidate` values. The final `DeterministicSpeechPolicy` still enforces URL, length, duplicate, per-user cooldown, disabled-user, and queue-pressure controls. A promoted candidate can therefore still be rejected. The queue remains FIFO; priority is metadata in this phase. Attention continues while speech is off or paused, while candidates observed during a pause are marked ineligible and are never replayed after resume.
+
+Attention defaults are: a 10,000 ms/500-message recent window, 1,500 ms group window, 128 pending groups, 200 decisions, bases of 45/65/10 for message/question/low-information, +10 per additional known viewer capped at 25, traffic counts of 8/20, and thresholds of 40/60/75. Supported overrides are:
+
+```text
+LIVE_ASSISTANT_ATTENTION_MODE
+LIVE_ASSISTANT_ATTENTION_RECENT_WINDOW_MS
+LIVE_ASSISTANT_ATTENTION_GROUP_WINDOW_MS
+LIVE_ASSISTANT_ATTENTION_MAX_RECENT_MESSAGES
+LIVE_ASSISTANT_ATTENTION_MAX_PENDING_GROUPS
+LIVE_ASSISTANT_ATTENTION_DECISION_HISTORY_LIMIT
+LIVE_ASSISTANT_ATTENTION_BUSY_MESSAGE_COUNT
+LIVE_ASSISTANT_ATTENTION_VERY_BUSY_MESSAGE_COUNT
+LIVE_ASSISTANT_ATTENTION_QUIET_THRESHOLD
+LIVE_ASSISTANT_ATTENTION_BUSY_THRESHOLD
+LIVE_ASSISTANT_ATTENTION_VERY_BUSY_THRESHOLD
+```
+
+Invalid values or invalid busy/threshold ordering produce a structured configuration diagnostic and retain safe defaults.
+
 Livestream text and voice settings are never interpolated into PowerShell code. The provider starts `powershell.exe` with a fixed application-owned script and `shell: false`; Base64-encoded JSON travels through stdin. Child output is consumed and failure diagnostics are bounded.
 
 ## Local dashboard
@@ -84,6 +115,7 @@ The versioned API provides:
 GET  /api/v1/health
 GET  /api/v1/status
 GET  /api/v1/events?limit=100
+GET  /api/v1/attention?limit=100
 GET  /api/v1/stream
 POST /api/v1/speech/pause
 POST /api/v1/speech/resume
@@ -95,10 +127,10 @@ Control POSTs require a JSON object such as `{}`. Browser requests must be same-
 
 The server defaults to loopback only. `LIVE_ASSISTANT_CONTROL_HOST` accepts only `127.0.0.1`, `localhost`, or `::1`; `LIVE_ASSISTANT_CONTROL_PORT` accepts ports `1` through `65535`. Invalid settings produce a diagnostic and use safe defaults. Ctrl+C closes the connector, speech worker and child process, HTTP listener, SSE clients, and runtime subscriptions.
 
-Event list responses are capped at 200 records and ordered oldest-to-newest within the selected recent window. Upstream `raw` is omitted unless `LIVE_ASSISTANT_INSPECT_RAW=true` or `--include-raw` enabled it when the process started; query parameters cannot override that policy. Livestream values and raw JSON are rendered with DOM `textContent`, and the dashboard uses a restrictive Content Security Policy with no remote scripts, fonts, analytics, or runtime dependencies.
+Event and attention list responses are capped at 200 records and ordered oldest-to-newest within the selected recent window. Status exposes attention mode, traffic level, recent chat count, pending groups, and bounded decision-history count without message text. SSE publishes safe `attention-decision` projections. The dashboard retains the canonical event feed and adds attention status, decision feed, scoring factors, source IDs, and group detail. Upstream `raw` is omitted unless `LIVE_ASSISTANT_INSPECT_RAW=true` or `--include-raw` enabled it when the process started; query parameters cannot override that policy. Livestream values and raw JSON are rendered with DOM `textContent`, and the dashboard uses a restrictive Content Security Policy with no remote scripts, fonts, analytics, or runtime dependencies.
 
 ## Current scope
 
-The foundation includes canonical events, raw and canonical simulator modes, a reconnecting native-WebSocket TikFinity adapter, unknown-event preservation, a bounded ordered bus and separate history, deterministic speech policy, a bounded provider-independent speech queue, a sequential speech worker, optional Windows local speech, a reusable application runtime, a loopback REST/SSE control plane, a static operational dashboard, structured diagnostics, and boundary-focused tests.
+The foundation includes canonical events, raw and canonical simulator modes, a reconnecting native-WebSocket TikFinity adapter, unknown-event preservation, a bounded ordered bus and separate history, deterministic Attention Engine Phase 1, deterministic speech policy, a bounded provider-independent speech queue, a sequential speech worker, optional Windows local speech, a reusable application runtime, a loopback REST/SSE control plane, a static operational dashboard, structured diagnostics, and boundary-focused tests.
 
 TikFinity fixtures are synthetic and sanitized; field compatibility is intentionally limited to the documented semantics covered by tests. Invalid JSON and frames without a valid event name are diagnosed and skipped at the transport boundary. Windows is the only implemented audio provider. AI, cloud speech, macOS/Linux speech, persistence, OBS, public network services, and direct TikTok connectivity remain unimplemented.

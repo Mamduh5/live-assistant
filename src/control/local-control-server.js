@@ -122,7 +122,7 @@ export class LocalControlServer {
     this.#url = `http://${hostForUrl(this.#host)}:${actualPort}/`;
     this.#unsubscribe = this.#runtime.subscribe((message) => {
       if (message.type === "runtime-state") this.#broker.broadcast("snapshot", this.#runtime.getSnapshot());
-      else if (["live-event", "connector-state", "speech-state", "diagnostic"].includes(message.type)) {
+      else if (["live-event", "attention-decision", "connector-state", "speech-state", "diagnostic"].includes(message.type)) {
         this.#broker.broadcast(message.type, message.data);
       }
     });
@@ -167,6 +167,15 @@ export class LocalControlServer {
       const limit = rawLimit === null ? 100 : Number(rawLimit);
       if (!Number.isSafeInteger(limit) || limit < 0) return apiError(response, 400, "invalid_limit", "limit must be a non-negative integer");
       return json(response, 200, { events: this.#runtime.getRecentEvents({ limit }) });
+    }
+    if (path === "/api/v1/attention") {
+      if (request.method !== "GET") return this.#wrongMethod(response, "GET");
+      const rawLimit = url.searchParams.get("limit");
+      const limit = rawLimit === null ? 100 : Number(rawLimit);
+      if (!Number.isSafeInteger(limit) || limit < 0) return apiError(response, 400, "invalid_limit", "limit must be a non-negative integer");
+      return json(response, 200, {
+        decisions: this.#runtime.getRecentAttention({ limit: Math.min(limit, 200) }),
+      });
     }
     if (path === "/api/v1/stream") {
       if (request.method !== "GET") return this.#wrongMethod(response, "GET");

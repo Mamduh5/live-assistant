@@ -10,6 +10,26 @@ export const DEFAULT_CONFIG = Object.freeze({
   }),
   eventBus: Object.freeze({ maxQueue: 256 }),
   eventHistory: Object.freeze({ limit: 500 }),
+  attention: Object.freeze({
+    mode: "passthrough",
+    recentWindowMs: 10_000,
+    maxRecentMessages: 500,
+    groupWindowMs: 1_500,
+    maxPendingGroups: 128,
+    decisionHistoryLimit: 200,
+    scoring: Object.freeze({
+      messageBase: 45,
+      questionBase: 65,
+      lowInformationBase: 10,
+      repeatedQuestionBonusPerUser: 10,
+      repeatedQuestionBonusCap: 25,
+      quietThreshold: 40,
+      busyMessageCount: 8,
+      busyThreshold: 60,
+      veryBusyMessageCount: 20,
+      veryBusyThreshold: 75,
+    }),
+  }),
   speechPolicy: Object.freeze({
     enabledEventTypes: Object.freeze(["chat.message"]),
     duplicateWindowMs: 5_000,
@@ -50,6 +70,13 @@ const POSITIVE_INTEGER_FIELDS = [
   ["LIVE_ASSISTANT_USER_COOLDOWN_MS", "speechPolicy", "perUserCooldownMs"],
   ["LIVE_ASSISTANT_MAX_MESSAGE_LENGTH", "speechPolicy", "maxMessageLength"],
   ["LIVE_ASSISTANT_CONTROL_PORT", "controlServer", "port"],
+  ["LIVE_ASSISTANT_ATTENTION_RECENT_WINDOW_MS", "attention", "recentWindowMs"],
+  ["LIVE_ASSISTANT_ATTENTION_GROUP_WINDOW_MS", "attention", "groupWindowMs"],
+  ["LIVE_ASSISTANT_ATTENTION_MAX_RECENT_MESSAGES", "attention", "maxRecentMessages"],
+  ["LIVE_ASSISTANT_ATTENTION_MAX_PENDING_GROUPS", "attention", "maxPendingGroups"],
+  ["LIVE_ASSISTANT_ATTENTION_DECISION_HISTORY_LIMIT", "attention", "decisionHistoryLimit"],
+  ["LIVE_ASSISTANT_ATTENTION_BUSY_MESSAGE_COUNT", "attention.scoring", "busyMessageCount"],
+  ["LIVE_ASSISTANT_ATTENTION_VERY_BUSY_MESSAGE_COUNT", "attention.scoring", "veryBusyMessageCount"],
 ];
 
 const BOOLEAN_FIELDS = [
@@ -65,6 +92,9 @@ const NUMBER_FIELDS = [
 const INTEGER_RANGE_FIELDS = [
   ["LIVE_ASSISTANT_SPEECH_RATE", "speechEngine.windows", "rate", -10, 10],
   ["LIVE_ASSISTANT_SPEECH_VOLUME", "speechEngine.windows", "volume", 0, 100],
+  ["LIVE_ASSISTANT_ATTENTION_QUIET_THRESHOLD", "attention.scoring", "quietThreshold", 0, 100],
+  ["LIVE_ASSISTANT_ATTENTION_BUSY_THRESHOLD", "attention.scoring", "busyThreshold", 0, 100],
+  ["LIVE_ASSISTANT_ATTENTION_VERY_BUSY_THRESHOLD", "attention.scoring", "veryBusyThreshold", 0, 100],
 ];
 
 function positiveInteger(value) {
@@ -98,6 +128,10 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
     },
     eventBus: { ...DEFAULT_CONFIG.eventBus },
     eventHistory: { ...DEFAULT_CONFIG.eventHistory },
+    attention: {
+      ...DEFAULT_CONFIG.attention,
+      scoring: { ...DEFAULT_CONFIG.attention.scoring },
+    },
     speechPolicy: {
       ...DEFAULT_CONFIG.speechPolicy,
       enabledEventTypes: [...DEFAULT_CONFIG.speechPolicy.enabledEventTypes],
@@ -155,6 +189,12 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
     else invalid(onDiagnostic, "LIVE_ASSISTANT_SPEECH_ENGINE", speechEngine, config.speechEngine.type);
   }
 
+  const attentionMode = environment.LIVE_ASSISTANT_ATTENTION_MODE;
+  if (attentionMode !== undefined) {
+    if (attentionMode === "passthrough" || attentionMode === "deterministic") config.attention.mode = attentionMode;
+    else invalid(onDiagnostic, "LIVE_ASSISTANT_ATTENTION_MODE", attentionMode, config.attention.mode);
+  }
+
   const speechVoice = environment.LIVE_ASSISTANT_SPEECH_VOICE;
   if (speechVoice !== undefined) {
     if (speechVoice.trim().length > 0) config.speechEngine.windows.voice = speechVoice;
@@ -176,6 +216,36 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
   if (config.controlServer.port > 65_535) {
     invalid(onDiagnostic, "LIVE_ASSISTANT_CONTROL_PORT", config.controlServer.port, DEFAULT_CONFIG.controlServer.port);
     config.controlServer.port = DEFAULT_CONFIG.controlServer.port;
+  }
+
+  if (config.attention.scoring.veryBusyMessageCount <= config.attention.scoring.busyMessageCount) {
+    invalid(onDiagnostic, "attention.scoring.messageCounts", {
+      busyMessageCount: config.attention.scoring.busyMessageCount,
+      veryBusyMessageCount: config.attention.scoring.veryBusyMessageCount,
+    }, {
+      busyMessageCount: DEFAULT_CONFIG.attention.scoring.busyMessageCount,
+      veryBusyMessageCount: DEFAULT_CONFIG.attention.scoring.veryBusyMessageCount,
+    });
+    config.attention.scoring.busyMessageCount = DEFAULT_CONFIG.attention.scoring.busyMessageCount;
+    config.attention.scoring.veryBusyMessageCount = DEFAULT_CONFIG.attention.scoring.veryBusyMessageCount;
+  }
+
+  if (!(
+    config.attention.scoring.quietThreshold <= config.attention.scoring.busyThreshold &&
+    config.attention.scoring.busyThreshold <= config.attention.scoring.veryBusyThreshold
+  )) {
+    invalid(onDiagnostic, "attention.scoring.thresholds", {
+      quietThreshold: config.attention.scoring.quietThreshold,
+      busyThreshold: config.attention.scoring.busyThreshold,
+      veryBusyThreshold: config.attention.scoring.veryBusyThreshold,
+    }, {
+      quietThreshold: DEFAULT_CONFIG.attention.scoring.quietThreshold,
+      busyThreshold: DEFAULT_CONFIG.attention.scoring.busyThreshold,
+      veryBusyThreshold: DEFAULT_CONFIG.attention.scoring.veryBusyThreshold,
+    });
+    config.attention.scoring.quietThreshold = DEFAULT_CONFIG.attention.scoring.quietThreshold;
+    config.attention.scoring.busyThreshold = DEFAULT_CONFIG.attention.scoring.busyThreshold;
+    config.attention.scoring.veryBusyThreshold = DEFAULT_CONFIG.attention.scoring.veryBusyThreshold;
   }
 
   if (config.tikfinity.reconnect.maxDelayMs < config.tikfinity.reconnect.initialDelayMs) {

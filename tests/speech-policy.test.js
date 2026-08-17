@@ -56,3 +56,36 @@ test("respects configured disabled event types", () => {
   const subject = policy({ enabledEventTypes: [] });
   assert.equal(subject.evaluate(chat("a", "hello")).reason, "disabled_event_type");
 });
+
+function candidate(id, text, overrides = {}) {
+  return {
+    text,
+    priority: 87,
+    primaryEventId: id,
+    sourceEventIds: [id],
+    userId: `user-${id}`,
+    createdAt: 1,
+    speechEligible: true,
+    ...overrides,
+  };
+}
+
+test("candidate evaluation propagates attention priority and grouped source IDs", () => {
+  const decision = policy().evaluateCandidate(candidate("a", "selected output", {
+    sourceEventIds: ["a", "b", "c"],
+    userId: undefined,
+  }), { now: 100 });
+  assert.equal(decision.request.priority, 87);
+  assert.deepEqual(decision.request.sourceEventIds, ["a", "b", "c"]);
+  assert.equal(decision.request.eventId, "a");
+});
+
+test("attention promotion cannot bypass final URL, length, duplicate, cooldown, or queue-pressure filters", () => {
+  const subject = policy({ maxMessageLength: 20 });
+  assert.equal(subject.evaluateCandidate(candidate("url", "https://example.test")).reason, "url_not_allowed");
+  assert.equal(subject.evaluateCandidate(candidate("long", "this is longer than twenty characters")).reason, "message_too_long");
+  assert.equal(subject.evaluateCandidate(candidate("first", "duplicate", { userId: "u1" }), { now: 1_000 }).action, "queue_speech");
+  assert.equal(subject.evaluateCandidate(candidate("duplicate", " DUPLICATE ", { userId: "u2" }), { now: 1_001 }).reason, "duplicate_chat");
+  assert.equal(subject.evaluateCandidate(candidate("cooldown", "different", { userId: "u1" }), { now: 1_001 }).reason, "user_cooldown");
+  assert.equal(subject.evaluateCandidate(candidate("pressure", "queue full"), { now: 10_000, queuePressure: 0.9 }).reason, "queue_pressure");
+});

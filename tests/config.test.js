@@ -116,3 +116,50 @@ test("rejects non-loopback control hosts and invalid ports", () => {
   assert.deepEqual(config.controlServer, DEFAULT_CONFIG.controlServer);
   assert.equal(diagnostics.length, 2);
 });
+
+test("loads validated deterministic attention configuration", () => {
+  const config = loadConfig({
+    LIVE_ASSISTANT_ATTENTION_MODE: "deterministic",
+    LIVE_ASSISTANT_ATTENTION_RECENT_WINDOW_MS: "20000",
+    LIVE_ASSISTANT_ATTENTION_GROUP_WINDOW_MS: "900",
+    LIVE_ASSISTANT_ATTENTION_MAX_RECENT_MESSAGES: "100",
+    LIVE_ASSISTANT_ATTENTION_MAX_PENDING_GROUPS: "20",
+    LIVE_ASSISTANT_ATTENTION_DECISION_HISTORY_LIMIT: "50",
+    LIVE_ASSISTANT_ATTENTION_BUSY_MESSAGE_COUNT: "5",
+    LIVE_ASSISTANT_ATTENTION_VERY_BUSY_MESSAGE_COUNT: "10",
+    LIVE_ASSISTANT_ATTENTION_QUIET_THRESHOLD: "30",
+    LIVE_ASSISTANT_ATTENTION_BUSY_THRESHOLD: "55",
+    LIVE_ASSISTANT_ATTENTION_VERY_BUSY_THRESHOLD: "80",
+  });
+  assert.equal(config.attention.mode, "deterministic");
+  assert.equal(config.attention.recentWindowMs, 20_000);
+  assert.equal(config.attention.groupWindowMs, 900);
+  assert.equal(config.attention.maxRecentMessages, 100);
+  assert.equal(config.attention.maxPendingGroups, 20);
+  assert.equal(config.attention.decisionHistoryLimit, 50);
+  assert.deepEqual(
+    [config.attention.scoring.busyMessageCount, config.attention.scoring.veryBusyMessageCount],
+    [5, 10],
+  );
+  assert.deepEqual(
+    [config.attention.scoring.quietThreshold, config.attention.scoring.busyThreshold, config.attention.scoring.veryBusyThreshold],
+    [30, 55, 80],
+  );
+});
+
+test("invalid attention mode and relationships fall back safely with diagnostics", () => {
+  const diagnostics = [];
+  const config = loadConfig({
+    LIVE_ASSISTANT_ATTENTION_MODE: "ai",
+    LIVE_ASSISTANT_ATTENTION_BUSY_MESSAGE_COUNT: "20",
+    LIVE_ASSISTANT_ATTENTION_VERY_BUSY_MESSAGE_COUNT: "10",
+    LIVE_ASSISTANT_ATTENTION_QUIET_THRESHOLD: "80",
+    LIVE_ASSISTANT_ATTENTION_BUSY_THRESHOLD: "50",
+  }, (value) => diagnostics.push(value));
+  assert.equal(config.attention.mode, "passthrough");
+  assert.equal(config.attention.scoring.busyMessageCount, DEFAULT_CONFIG.attention.scoring.busyMessageCount);
+  assert.equal(config.attention.scoring.veryBusyMessageCount, DEFAULT_CONFIG.attention.scoring.veryBusyMessageCount);
+  assert.equal(config.attention.scoring.quietThreshold, DEFAULT_CONFIG.attention.scoring.quietThreshold);
+  assert.equal(config.attention.scoring.busyThreshold, DEFAULT_CONFIG.attention.scoring.busyThreshold);
+  assert.equal(diagnostics.length, 3);
+});

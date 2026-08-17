@@ -23,11 +23,26 @@ class StubRuntime {
     connector: { name: "simulator", state: "connected" },
     speech: { configuredEngine: "windows", enabled: true, paused: false, workerState: "idle", queueSize: 0, currentRequestId: null },
     events: { historySize: 1, rawInspectionEnabled: false },
+    attention: { mode: "deterministic", trafficLevel: "quiet", recentChatCount: 1, pendingGroupCount: 0, decisionHistorySize: 1 },
   };
 
   getStatus() { return structuredClone(this.status); }
   getRecentEvents({ limit }) { return [{ id: "event-1", type: "chat.message", summary: "hello" }].slice(-limit); }
-  getSnapshot() { return { status: this.getStatus(), events: this.getRecentEvents({ limit: 100 }), diagnostics: [] }; }
+  getRecentAttention({ limit }) {
+    return [{
+      id: "decision-1", createdAt: 1, action: "promote", classification: "message", priority: 45,
+      reason: "message_allowed", sourceEventIds: ["event-1"], score: { total: 45, threshold: 40, factors: [] },
+      group: null, displayText: "<img src=x onerror=alert(1)>",
+    }].slice(-limit);
+  }
+  getSnapshot() {
+    return {
+      status: this.getStatus(),
+      events: this.getRecentEvents({ limit: 100 }),
+      attention: this.getRecentAttention({ limit: 100 }),
+      diagnostics: [],
+    };
+  }
   subscribe(handler) { this.subscribers.push(handler); return () => { this.subscribers = this.subscribers.filter((item) => item !== handler); }; }
   emit(type, data) { for (const handler of [...this.subscribers]) handler({ type, data }); }
   pauseSpeech() { this.calls.push("pause"); this.status.speech.paused = true; return this.status.speech; }
@@ -104,6 +119,24 @@ test("events expose raw only when the runtime's server-side policy includes it",
   }
 });
 
+test("serves bounded safe attention history and validates method and limit", async () => {
+  const { runtime, server, url } = await fixture();
+  let requestedLimit;
+  const original = runtime.getRecentAttention.bind(runtime);
+  runtime.getRecentAttention = ({ limit }) => { requestedLimit = limit; return original({ limit }); };
+  try {
+    const response = await fetch(`${url}api/v1/attention?limit=999`);
+    const decision = (await response.json()).decisions[0];
+  assert.equal(requestedLimit, 200);
+    assert.equal(decision.displayText, "<img src=x onerror=alert(1)>");
+    assert.equal("raw" in decision, false);
+    assert.equal((await fetch(`${url}api/v1/attention?limit=bad`)).status, 400);
+    assert.equal((await fetch(`${url}api/v1/attention`, { method: "POST" })).status, 405);
+  } finally {
+    await server.stop();
+  }
+});
+
 test("maps unavailable runtime controls to a structured non-200 response", async () => {
   const { runtime, server, url } = await fixture();
   runtime.pauseSpeech = () => { throw new RuntimeControlError("speech_not_available", "Speech is not enabled"); };
@@ -146,6 +179,9 @@ test("SSE sends an initial snapshot and state updates, cleans disconnected clien
     runtime.emit("speech-state", { workerState: "speaking" });
     const stateUpdate = new TextDecoder().decode((await reader.read()).value);
     assert.match(stateUpdate, /event: speech-state/);
+    runtime.emit("attention-decision", { id: "decision-live" });
+    const attentionUpdate = new TextDecoder().decode((await reader.read()).value);
+    assert.match(attentionUpdate, /event: attention-decision/);
     await reader.cancel();
     await until(() => server.sseClientCount === 0);
     const shutdownResponse = await fetch(`${url}api/v1/stream`);
@@ -190,6 +226,7 @@ test("serves a CSP-protected dependency-free dashboard without unsafe innerHTML 
     const script = await (await fetch(`${url}app.js`)).text();
     assert.doesNotMatch(script, /innerHTML/);
     assert.match(script, /textContent/);
+    assert.match(script, /attention-decision/);
   } finally {
     await server.stop();
   }

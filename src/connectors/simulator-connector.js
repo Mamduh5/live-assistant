@@ -22,6 +22,35 @@ export const SIMULATOR_SCENARIOS = Object.freeze({
     { type: LiveEventType.PLATFORM_UNKNOWN, data: { reason: "unsupported_event_type" }, raw: { unexpected: "shape" } },
     { type: LiveEventType.PLATFORM_UNKNOWN, data: { reason: "malformed_event_data", nativeEventType: "comment" }, raw: { kind: "comment", text: 42 } },
   ],
+  "attention-question-burst": [
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "u1", displayName: "Tom" }, data: { text: "What weapon are you using?" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "u2", displayName: "Alex" }, data: { text: " what   weapon are you using?? " } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "u3", displayName: "Mary" }, data: { text: "WHAT WEAPON ARE YOU USING?" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "u4", displayName: "Sam" }, data: { text: "What sword are you using?" } },
+  ],
+  "attention-busy-chat": Array.from({ length: 22 }, (_, index) => ({
+    type: LiveEventType.CHAT_MESSAGE,
+    user: { id: `busy-${index}`, displayName: `Viewer ${index + 1}` },
+    data: { text: index === 8 || index === 12 ? "Which route should we take?" : index === 18 ? "???" : `Chat message ${index + 1}` },
+  })),
+  "attention-low-information": [
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "noise-1" }, data: { text: "😂😂😂" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "noise-2" }, data: { text: "!!!" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "noise-3" }, data: { text: "🔥🔥" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "noise-4" }, data: { text: "..." } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "unicode-1" }, data: { text: "สวัสดีทุกคน" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "unicode-2" }, data: { text: "مرحبا بالجميع" } },
+  ],
+  "attention-mixed": [
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "mix-1", displayName: "Ari" }, data: { text: "Hello streamer" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "mix-2", displayName: "Bo" }, data: { text: "Which build is this?" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "mix-3", displayName: "Cai" }, data: { text: " WHICH   BUILD IS THIS?? " } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "mix-4", displayName: "Dee" }, data: { text: "This boss looks difficult" } },
+    { type: LiveEventType.CHAT_MESSAGE, user: { id: "mix-5", displayName: "Em" }, data: { text: "🔥🔥🔥" } },
+    { type: LiveEventType.SOCIAL_FOLLOW, user: { id: "mix-6", displayName: "Fox" }, data: {} },
+    { type: LiveEventType.ROOM_VIEWER_COUNT, data: { count: 245 } },
+    { type: LiveEventType.GIFT_RECEIVED, user: { id: "mix-7", displayName: "Gia" }, data: { giftId: "rose", giftName: "Rose", quantity: 2 } },
+  ],
 });
 
 export const RAW_SIMULATOR_SCENARIOS = Object.freeze({

@@ -1,10 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  SIMULATOR_SCENARIOS,
   RawSimulatorConnector,
   SimulatorConnector,
   assertLiveEvent,
 } from "../src/index.js";
+
+test("includes deterministic attention development scenarios", () => {
+  for (const scenario of ["attention-question-burst", "attention-busy-chat", "attention-low-information", "attention-mixed"]) {
+    assert.equal(Array.isArray(SIMULATOR_SCENARIOS[scenario]), true);
+    assert.equal(SIMULATOR_SCENARIOS[scenario].length > 0, true);
+  }
+  assert.equal(SIMULATOR_SCENARIOS["attention-busy-chat"].length >= 20, true);
+});
 
 test("canonical simulator emits valid events and reports lifecycle state", async () => {
   let nextId = 0;

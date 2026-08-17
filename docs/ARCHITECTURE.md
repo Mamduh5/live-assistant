@@ -7,18 +7,18 @@ Status: initial implemented architecture.
 ```text
 External source -> Connector -> Normalizer -> canonical LiveEvent -> LiveEventBus
                                                                   |-> EventHistory
-                                                                  |-> Session state (future)
-                                                                  `-> Consumers
-                                                                       -> deterministic policy
-                                                                       -> action routing (future)
-                                                                       -> output adapters
+                                                                  |-> bounded AttentionEngine state
+                                                                  |    `-> AttentionDecision
+                                                                  |         `-> SpeechCandidate
+                                                                  |              `-> final speech policy
+                                                                  `-> other consumers/output adapters
 ```
 
 Each layer remains independently replaceable where practical. The application starts as one local process; distributed messaging, persistence, cloud services, and a heavyweight UI are not justified.
 
 ## Application runtime and local control plane
 
-`LiveAssistantRuntime` is the single application composition used by the CLI and optional dashboard. It coordinates the connector, event bus, bounded history, deterministic speech policy, queue, worker, engine, lifecycle cancellation, status projection, and control operations. Provider parsing remains in normalizers, playback remains in speech engines, and HTTP/HTML concerns remain in adapters.
+`LiveAssistantRuntime` is the single application composition used by the CLI and optional dashboard. It coordinates the connector, event bus, bounded history, Attention Engine, deterministic speech policy, queue, worker, speech engine, lifecycle cancellation, status projection, and control operations. Provider parsing remains in normalizers, attention consumes only canonical events, playback remains in speech engines, and HTTP/HTML concerns remain in adapters.
 
 ```text
 TikFinity / Simulator -> LiveAssistantRuntime
@@ -34,7 +34,7 @@ TikFinity / Simulator -> LiveAssistantRuntime
 
 The native `node:http` server binds to `127.0.0.1:4820` by default and uses `/api/v1/` as a durable local API namespace. Dashboard mode must be requested explicitly. A finite simulator completes and drains speech while its runtime history remains available; a reconnecting or unavailable TikFinity adapter does not take down the dashboard.
 
-REST exposes health, sanitized status, capped recent-event projections, and speech controls. SSE immediately sends a snapshot, then selected live-event, connector, speech, and diagnostic projections. The server subscribes once to the runtime and fans out to bounded clients. When a response reports backpressure, subsequent updates for that client are counted rather than queued; after `drain`, one `stream-gap` event instructs the browser to refetch status/history. Disconnect and shutdown remove response and runtime listeners.
+REST exposes health, sanitized status, capped recent-event and attention-decision projections, and speech controls. SSE immediately sends a snapshot, then selected live-event, attention-decision, connector, speech, and diagnostic projections. The server subscribes once to the runtime and fans out to bounded clients. When a response reports backpressure, subsequent updates for that client are counted rather than queued; after `drain`, one `stream-gap` event instructs the browser to refetch status/history. Disconnect and shutdown remove response and runtime listeners.
 
 Pause gates the worker between utterances and stops the runtime from accepting new speech requests; chat received while paused remains in event history and is not replayed on resume. Existing waiting requests remain until resumed or explicitly cleared. Clear removes only waiting requests. Cancel-current aborts only the active engine call, after which the worker accepts future requests.
 
@@ -112,18 +112,24 @@ An unknown event retains connector, platform, receipt time, raw payload, and its
 
 A future session-state consumer may derive viewer count, connected platforms, recent active users, complete gift streaks, stream timing, topics, and assistant status. Connectors must not own this global state.
 
-## Deterministic policy and speech
-
-The AI Attention Engine remains unimplemented until its requirements are concrete. Initial safety and noise control are deterministic.
+## Deterministic attention and speech
 
 ```text
-LiveEvent -> DeterministicSpeechPolicy -> SpeechRequest -> SpeechQueue
-                                                       -> SpeechWorker
-                                                       -> SpeechEngine
-                                                       -> audio provider
+LiveEvent -> AttentionEngine -> AttentionDecision -> SpeechCandidate
+                                                      -> DeterministicSpeechPolicy
+                                                      -> SpeechRequest -> FIFO SpeechQueue
+                                                                        -> SpeechWorker
+                                                                        -> SpeechEngine
+                                                                        -> audio provider
 ```
 
-The policy currently handles supported event types, empty chat, URLs, maximum length, exact normalized duplicates, per-user cooldown, disabled users, and queue pressure. It returns an inspectable decision with a reason and priority. It does not play audio.
+`AttentionEngine` owns bounded recent-chat state, pending exact question groups, fixed first-seen deadlines, timer/flush lifecycle, bounded decision history, and traffic measurement. `DeterministicAttentionPolicy` owns Unicode-aware classification, configured score factors, traffic thresholds, reasons, and candidate formatting. Recent state is bounded by a 10-second default window and a 500-record default maximum; pending groups and decision history are independently bounded. Per-group retained source IDs and stable users share the recent-message cap, while occurrence count can continue as a scalar. Group overflow deterministically flushes the oldest group and emits a diagnostic. Finite sources explicitly flush groups before speech drains, while close cancels timers and prevents late decisions.
+
+Exact-normalized matching performs Unicode NFKC normalization, trimming, whitespace collapse, locale-independent case folding, and terminal question-mark normalization. It never replaces synonyms, translates, stems, computes fuzzy distance, or performs semantic clustering. Stable canonical user ID, then username, supplies a unique-viewer key. Unknown users increase occurrence count but not viewer count. Multiple known viewers yield deterministic count-based text without usernames. **Deterministic Attention is not semantic AI.**
+
+Traffic is `quiet`, `busy`, or `very_busy` based on recent canonical chat count. Each level selects a configured promotion threshold. Decisions contain bounded source IDs, classification, action, reason, total, threshold, small score-factor list, optional group metadata, and an optional provider-independent candidate. Ignored decisions remain inspectable. The policy boundary can later host an AI implementation, but Phase 1 contains no LLM, embeddings, or pseudo-semantic rules.
+
+The final speech policy handles empty candidate text, URLs, maximum length, exact normalized output duplicates, per-user cooldown, disabled users, and queue pressure. It returns an inspectable speech outcome and never plays audio itself. Attention priority propagates into the request as metadata but does not change FIFO scheduling. Grouped multi-viewer candidates omit `userId`, so no arbitrary viewer's cooldown is applied. Attention still records decisions when speech is off or paused; candidates received while paused are ineligible and never replayed on resume.
 
 `SpeechQueue` is bounded, FIFO, and provider-independent. It provides notification-based waiting rather than polling. Closing the producer side drains existing requests and then ends the worker; immediate cancellation clears the backlog and aborts active playback.
 
@@ -135,7 +141,7 @@ Speech playback is off by default. The Windows engine is intentionally unsupport
 
 ## Future boundaries
 
-- Attention may consume canonical events, session state, queue pressure, and recent output. AI extends deterministic controls and cannot become transport infrastructure.
+- A future AI attention policy may consume canonical events and bounded application context behind the same decision seam. It cannot become transport or bypass final speech controls.
 - Rules/actions consume canonical events and decisions, never provider payloads.
 - OBS remains an output adapter through a future local overlay API and/or OBS WebSocket.
 - The local API may later add simulation, selected configuration, or overlay state without exposing runtime internals directly. It remains loopback-only by default.
@@ -159,5 +165,6 @@ Structured diagnostics expose connector lifecycle, normalization failures, queue
 - TikFinity is an optional local WebSocket adapter; see [ADR 0003](decisions/0003-tikfinity-adapter.md).
 - Speech engines are replaceable, with Windows System.Speech as the first local provider; see [ADR 0004](decisions/0004-windows-system-speech-engine.md).
 - Local operations use a loopback REST/SSE control plane and same-origin static dashboard; see [ADR 0005](decisions/0005-local-control-plane.md).
+- Deterministic Attention Phase 1 uses bounded exact-match state and an explicit candidate boundary; see [ADR 0006](decisions/0006-deterministic-attention-engine.md).
 
 Frontend frameworks, desktop shells, HTTP server libraries, non-Windows TTS providers, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.
