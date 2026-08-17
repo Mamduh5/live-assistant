@@ -1,10 +1,10 @@
 export function createJsonLogger(write = (line) => console.log(line), clock = () => new Date()) {
   function log(level, message, fields = {}) {
     write(JSON.stringify({
+      ...fields,
       timestamp: clock().toISOString(),
       level,
       message,
-      ...fields,
     }));
   }
 
@@ -14,4 +14,3 @@ export function createJsonLogger(write = (line) => console.log(line), clock = ()
     error: (message, fields) => log("error", message, fields),
   };
 }
-

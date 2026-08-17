@@ -3,9 +3,14 @@ import assert from "node:assert/strict";
 import { DEFAULT_CONFIG, loadConfig } from "../src/index.js";
 
 test("loads valid bounded configuration overrides", () => {
-  const config = loadConfig({ LIVE_ASSISTANT_EVENT_QUEUE_LIMIT: "12" });
+  const config = loadConfig({
+    LIVE_ASSISTANT_EVENT_QUEUE_LIMIT: "12",
+    LIVE_ASSISTANT_HISTORY_LIMIT: "42",
+    LIVE_ASSISTANT_SPEECH_QUEUE_LIMIT: "8",
+  });
   assert.equal(config.eventBus.maxQueue, 12);
-  assert.equal(config.eventBus.historyLimit, DEFAULT_CONFIG.eventBus.historyLimit);
+  assert.equal(config.eventHistory.limit, 42);
+  assert.equal(config.speechQueue.maxQueue, 8);
 });
 
 test("reports invalid configuration and uses a safe default", () => {

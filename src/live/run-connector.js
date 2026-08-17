@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { createUnknownEvent } from "../events/live-event.js";
+import { assertLiveEvent, createUnknownEvent } from "../events/live-event.js";
 
-export async function runConnector({ connector, normalize, bus, signal, logger, clock = () => new Date(), idFactory = randomUUID }) {
+export async function runConnector({ connector, normalize, bus, signal, logger, clock = Date.now, idFactory = randomUUID }) {
   logger.info("connector.started", { connector: connector.name });
   let received = 0;
 
@@ -10,14 +10,14 @@ export async function runConnector({ connector, normalize, bus, signal, logger, 
       if (signal?.aborted) break;
       let event;
       try {
-        event = normalize(raw);
+        event = normalize ? normalize(raw) : assertLiveEvent(raw);
       } catch (error) {
-        const timestamp = clock().toISOString();
+        const receivedAt = clock();
         event = createUnknownEvent({
           id: idFactory(),
           connector: connector.name,
-          occurredAt: timestamp,
-          receivedAt: timestamp,
+          timestamp: receivedAt,
+          receivedAt,
           raw,
           reason: "normalizer_failed",
         });

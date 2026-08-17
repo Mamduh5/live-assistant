@@ -20,9 +20,9 @@ Live platforms
 
 ## Initial development loop
 
-The first foundation provides an offline path from a simulator through canonical events to a deterministic filter and event inspector. This validates the replaceable boundaries and creates a development loop that needs no real livestream.
+The first foundation provides an offline path from a simulator through canonical events to bounded history, deterministic speech policy, a bounded speech queue, and an event inspector. This validates the replaceable boundaries and creates a development loop that needs no real livestream.
 
-Future vertical slices may add a bounded speech queue and replaceable local speech engine, then an optional TikFinity adapter. AI, OBS, a visual UI, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the initial foundation.
+Future vertical slices may add a replaceable local speech engine and, once a concrete protocol contract and sanitized fixtures are available, an optional TikFinity adapter. AI, OBS, a visual UI, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms are not part of the initial foundation.
 
 ## Success criteria
 
@@ -32,4 +32,3 @@ Future vertical slices may add a bounded speech queue and replaceable local spee
 - Unknown and malformed inputs remain inspectable.
 - Traffic cannot create unbounded queues or history.
 - Event behavior is deterministic, observable, and testable.
-

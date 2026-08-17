@@ -1,27 +1,30 @@
-import { assertLiveEvent } from "./live-event.js";
+import { LiveEventType, assertLiveEvent } from "./live-event.js";
+
+const EVENT_TYPES = new Set(Object.values(LiveEventType));
 
 export class LiveEventBus {
   #queue = [];
-  #history = [];
   #subscribers = [];
   #drainPromise = null;
   #maxQueue;
-  #historyLimit;
   #onDiagnostic;
 
-  constructor({ maxQueue, historyLimit, onDiagnostic = () => {} }) {
+  constructor({ maxQueue, onDiagnostic = () => {} }) {
     if (!Number.isSafeInteger(maxQueue) || maxQueue < 1) throw new RangeError("maxQueue must be a positive integer");
-    if (!Number.isSafeInteger(historyLimit) || historyLimit < 1) throw new RangeError("historyLimit must be a positive integer");
     this.#maxQueue = maxQueue;
-    this.#historyLimit = historyLimit;
     this.#onDiagnostic = onDiagnostic;
   }
 
-  subscribe(handler) {
+  subscribe(typeOrHandler, possibleHandler) {
+    const type = typeof typeOrHandler === "string" ? typeOrHandler : null;
+    const handler = type === null ? typeOrHandler : possibleHandler;
+    if (type !== null && !EVENT_TYPES.has(type)) throw new TypeError(`Unsupported subscription type: ${type}`);
     if (typeof handler !== "function") throw new TypeError("Subscriber must be a function");
-    this.#subscribers.push(handler);
+
+    const subscription = { type, handler };
+    this.#subscribers.push(subscription);
     return () => {
-      const index = this.#subscribers.indexOf(handler);
+      const index = this.#subscribers.indexOf(subscription);
       if (index >= 0) this.#subscribers.splice(index, 1);
     };
   }
@@ -46,20 +49,17 @@ export class LiveEventBus {
   }
 
   #scheduleDrain() {
-    if (this.#drainPromise) return;
-    this.#drainPromise = Promise.resolve().then(() => this.#drain());
+    if (!this.#drainPromise) this.#drainPromise = Promise.resolve().then(() => this.#drain());
   }
 
   async #drain() {
     try {
       while (this.#queue.length > 0) {
         const event = this.#queue.shift();
-        this.#history.push(event);
-        if (this.#history.length > this.#historyLimit) this.#history.shift();
-
-        for (const subscriber of [...this.#subscribers]) {
+        for (const { type, handler } of [...this.#subscribers]) {
+          if (type !== null && type !== event.type) continue;
           try {
-            await subscriber(event);
+            await handler(event);
           } catch (error) {
             this.#onDiagnostic({
               code: "event_bus.subscriber_failed",
@@ -77,10 +77,6 @@ export class LiveEventBus {
 
   async flush() {
     while (this.#drainPromise) await this.#drainPromise;
-  }
-
-  getHistory() {
-    return [...this.#history];
   }
 }
 

@@ -3,8 +3,10 @@
 Live Assistant is a local-first foundation for turning livestream events into useful, bounded, streamer-facing information. The current vertical slice runs entirely offline:
 
 ```text
-SimulatorConnector -> simulator normalizer -> canonical LiveEvent
-                   -> bounded LiveEventBus -> deterministic filter -> inspector
+SimulatorConnector -> canonical LiveEvent -> bounded LiveEventBus
+                                         |-> bounded EventHistory
+                                         `-> speech policy -> bounded SpeechQueue
+                                                           `-> inspector
 ```
 
 ## Requirements
@@ -32,6 +34,6 @@ Configuration is centralized in `src/config/defaults.js`. A small set of safe tu
 
 ## Current scope
 
-The foundation includes canonical events, an adapter boundary, unknown-event preservation, a bounded ordered bus and history, deterministic duplicate/empty-message filtering, simulator scenarios, structured diagnostics, and boundary-focused tests.
+The foundation includes canonical events, raw and canonical simulator modes, an adapter boundary, unknown-event preservation, a bounded ordered bus and separate history, deterministic speech policy, a bounded provider-independent speech queue, simulator scenarios, structured diagnostics, and boundary-focused tests.
 
 It intentionally does not include TikFinity transport, real speech playback, AI, a UI, persistence, OBS, or public network services. Those remain replaceable adapters or later domain layers.

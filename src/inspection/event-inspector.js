@@ -1,14 +1,15 @@
-export function inspectEvent(event, decision, { includeRaw = false } = {}) {
+export function inspectEvent(event, decision, { includeRaw = false, actionResult } = {}) {
   return {
     eventId: event.id,
     type: event.type,
     platform: event.platform,
-    occurredAt: event.occurredAt,
-    actor: event.actor,
+    connector: event.connector,
+    eventTimestamp: event.timestamp,
+    receivedAt: event.receivedAt,
+    user: event.user ?? null,
     data: event.data,
     decision,
-    source: event.source,
+    ...(actionResult ? { actionResult } : {}),
     ...(includeRaw ? { raw: event.raw } : {}),
   };
 }
-

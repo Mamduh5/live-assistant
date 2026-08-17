@@ -7,6 +7,7 @@ Before substantial changes, read `docs/PROJECT.md` and `docs/ARCHITECTURE.md`. T
 - External transports terminate at connector and normalizer boundaries.
 - Generic code consumes canonical `LiveEvent` objects, never provider payload shapes.
 - Preserve every upstream payload in `raw`; normalize unsupported or malformed inputs as inspectable `unknown` events.
+- Use the canonical namespaced event types and v1 envelope defined in `docs/ARCHITECTURE.md`; treat that contract as an internal API.
 - Keep connectors separate from attention, speech, OBS, UI, and business policy.
 - Keep speech policy, bounded speech queues, and speech engines separate.
 - Treat AI as optional. Deterministic ingestion, filtering, simulation, and outputs must work without it.
@@ -21,4 +22,3 @@ Before substantial changes, read `docs/PROJECT.md` and `docs/ARCHITECTURE.md`. T
 ## Working practices
 
 Prefer one coherent vertical slice over broad scaffolding. Keep fixtures for raw connector data distinct from canonical fixtures. Test behavior at boundaries, including malformed inputs, unknown preservation, connector lifecycle, ordering, and bounds. Run `npm run validate` before claiming completion, and report any unrun or failing checks accurately.
-

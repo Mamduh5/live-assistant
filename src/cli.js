@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-import { randomUUID } from "node:crypto";
 import {
-  DeterministicEventFilter,
+  DeterministicSpeechPolicy,
+  EventHistory,
   LiveEventBus,
   SIMULATOR_SCENARIOS,
   SimulatorConnector,
+  SpeechQueue,
   createJsonLogger,
   inspectEvent,
   loadConfig,
-  normalizeSimulatorPayload,
   runConnector,
 } from "./index.js";
 
@@ -26,31 +26,30 @@ const config = loadConfig(process.env, (diagnostic) => logger.warn(diagnostic.co
 const scenario = scenarioOption() ?? "quiet-chat";
 
 if (!Object.hasOwn(SIMULATOR_SCENARIOS, scenario)) {
-  logger.error("cli.invalid_scenario", {
-    scenario,
-    availableScenarios: Object.keys(SIMULATOR_SCENARIOS),
-  });
+  logger.error("cli.invalid_scenario", { scenario, availableScenarios: Object.keys(SIMULATOR_SCENARIOS) });
   process.exitCode = 1;
 } else {
-  const bus = new LiveEventBus({
-    ...config.eventBus,
-    onDiagnostic: (diagnostic) => logger.warn(diagnostic.code, diagnostic),
-  });
-  const filter = new DeterministicEventFilter(config.filter);
+  const diagnostics = (diagnostic) => logger.warn(diagnostic.code, diagnostic);
+  const bus = new LiveEventBus({ ...config.eventBus, onDiagnostic: diagnostics });
+  const history = new EventHistory(config.eventHistory);
+  const speechPolicy = new DeterministicSpeechPolicy(config.speechPolicy);
+  const speechQueue = new SpeechQueue({ ...config.speechQueue, onDiagnostic: diagnostics });
+  const includeRaw = config.inspector.includeRaw || process.argv.includes("--include-raw");
+
+  bus.subscribe((event) => history.record(event));
   bus.subscribe((event) => {
-    const decision = filter.evaluate(event);
-    logger.info("event.inspected", inspectEvent(event, decision, {
-      ...config.inspector,
-      includeRaw: config.inspector.includeRaw || process.argv.includes("--include-raw"),
-    }));
+    const decision = speechPolicy.evaluate(event, { queuePressure: speechQueue.pressure });
+    const actionResult = decision.action === "queue_speech"
+      ? speechQueue.enqueue(decision.request)
+      : { accepted: false, reason: decision.reason };
+    logger.info("event.inspected", inspectEvent(event, decision, { includeRaw, actionResult }));
   });
 
   const connector = new SimulatorConnector({ scenario });
-  await runConnector({
-    connector,
-    normalize: normalizeSimulatorPayload,
-    bus,
-    logger,
-    idFactory: randomUUID,
+  const result = await runConnector({ connector, bus, logger });
+  logger.info("pipeline.completed", {
+    connectorStatus: result.status,
+    historySize: history.size,
+    speechQueueSize: speechQueue.size,
   });
 }

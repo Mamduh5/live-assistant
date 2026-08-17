@@ -1,48 +1,121 @@
-# Architecture
+# Live Assistant architecture
 
-## Core flow
+Status: initial implemented architecture.
+
+## System overview
 
 ```text
-external source -> Connector -> Normalizer -> canonical LiveEvent
-                                            -> LiveEventBus
-                                            -> domain consumers
-                                            -> attention/rules/actions
-                                            -> output adapters
+External source -> Connector -> Normalizer -> canonical LiveEvent -> LiveEventBus
+                                                                  |-> EventHistory
+                                                                  |-> Session state (future)
+                                                                  `-> Consumers
+                                                                       -> deterministic policy
+                                                                       -> action routing (future)
+                                                                       -> output adapters
 ```
 
-Connectors own transport and lifecycle only. Normalizers are the sole translation boundary for external field names. Domain consumers receive canonical events. Outputs consume domain decisions and never own application policy.
+Each layer remains independently replaceable where practical. The application starts as one local process; distributed messaging, persistence, cloud services, and a heavyweight UI are not justified.
 
-## Canonical event contract
+## Connector layer
 
-`LiveEvent` is an internal API. Version 1 has stable envelope fields:
+Connectors establish and close external connections, report connection state, receive raw events, reconnect where appropriate, and surface transport errors. They do not implement speech, attention, actions, OBS behavior, or UI state.
 
-- `schemaVersion`, `id`, `type`, `platform`
-- `occurredAt`, `receivedAt`
-- `source` with connector identity and optional native event name
-- nullable canonical `actor`
-- type-specific canonical `data`
-- original `raw` payload
+Potential implementations include TikFinity, direct TikTok, YouTube Live, Twitch, and simulator connectors. Direct TikTok transport is not selected. A TikFinity connector is deferred until its concrete local transport contract and sanitized payload fixtures are available.
 
-Supported types are `chat.message`, `gift`, `follow`, `subscription`, `like`, `share`, `room.viewer_count`, and `unknown`. Additive evolution is preferred. Persisted or externally exposed representations must retain the schema version.
+The simulator is first-class and has two distinct modes:
 
-Malformed inputs and unsupported native event names normalize to `unknown` with a reason. They are diagnostics, not process-fatal exceptions.
+- `SimulatorConnector` generates canonical events for application behavior.
+- `RawSimulatorConnector` generates connector-shaped input for normalizer tests.
 
-## Processing guarantees
+Both report lifecycle state and support cancellation. The canonical simulator enters the same process-local bus used by real normalized events.
 
-`LiveEventBus` dispatches events and subscribers in registration order. Its pending queue and delivered-event history are bounded. The configured overflow policy drops the oldest pending event and emits a diagnostic. Subscriber failures are isolated and observable.
+## Normalization layer
 
-The initial deterministic filter suppresses empty chat and repeated normalized chat text inside a configurable window. Its tracking state is bounded. It is a domain consumer, not connector behavior.
+Each real connector has its own normalizer. A normalizer owns provider-field extraction and converts exactly one upstream payload into one canonical event. Unsupported or malformed input becomes `platform.unknown`; it is never silently discarded. The complete input remains in `raw`.
 
-## Configuration and operations
+Normalization reports what the upstream event represents. Aggregation—especially gift streak completion—is a later session/domain responsibility.
 
-Safe defaults live in `src/config/defaults.js`. Configuration errors fall back to defaults and are reported. Diagnostics are structured JSON. No server or external connection exists in this slice; any future local server must bind to `127.0.0.1` by default.
+## Canonical LiveEvent v1
 
-## Extension points
+`LiveEvent` is an internal API whose v1 envelope contains:
 
-- A connector exposes an async `events(signal)` iterable and an identity.
-- A normalizer maps one connector payload to one canonical event.
-- Event-bus subscribers implement domain policy or projections.
-- Future speech policy will emit requests to a bounded speech queue; a separate engine will play them.
+```text
+id             locally generated, locally unique string
+schemaVersion  1
+platform       canonical platform identifier
+connector      connector identity
+type           namespaced canonical event type
+timestamp      source time in Unix milliseconds when trustworthy,
+               otherwise local receipt time
+receivedAt     local receipt time in Unix milliseconds
+user           optional canonical LiveUser
+data           type-specific canonical data
+raw            complete upstream input
+```
 
-The simulator deliberately uses the same connector-normalizer-bus path intended for real transports.
+The initial event namespace is:
+
+```text
+chat.message
+gift.received
+social.follow
+social.share
+engagement.like
+subscription.started
+room.viewer_count
+platform.unknown
+```
+
+`LiveUser` includes only broadly useful optional attributes: `id`, `username`, `displayName`, `avatarUrl`, `isFollower`, `isSubscriber`, and `isModerator`. Provider-only metadata stays in `raw`.
+
+An unknown event retains connector, platform, receipt time, raw payload, and its native event name when known. See [ADR 0001](decisions/0001-canonical-live-event-v1.md).
+
+## Event bus and history
+
+`LiveEventBus` is process-local. It supports publishing, subscribing to all events, subscribing by canonical type, and unsubscribing. Events and matching subscribers are invoked in deterministic registration order. The pending queue is bounded; overflow drops the oldest pending event with a structured diagnostic. Subscriber failures are isolated.
+
+`EventHistory` is a separate canonical-event consumer. It retains the most recent 500 events by default, with a configurable bound. Persistent recording is not implied.
+
+## Session state
+
+A future session-state consumer may derive viewer count, connected platforms, recent active users, complete gift streaks, stream timing, topics, and assistant status. Connectors must not own this global state.
+
+## Deterministic policy and speech
+
+The AI Attention Engine remains unimplemented until its requirements are concrete. Initial safety and noise control are deterministic.
+
+```text
+LiveEvent -> DeterministicSpeechPolicy -> SpeechRequest -> SpeechQueue
+                                                       -> SpeechEngine (future)
+```
+
+The policy currently handles supported event types, empty chat, URLs, maximum length, exact normalized duplicates, per-user cooldown, disabled users, and queue pressure. It returns an inspectable decision with a reason and priority. It does not play audio.
+
+`SpeechQueue` is bounded and provider-independent. A speech engine will later consume requests; browser, system, and cloud engines remain undecided.
+
+## Future boundaries
+
+- Attention may consume canonical events, session state, queue pressure, and recent output. AI extends deterministic controls and cannot become transport infrastructure.
+- Rules/actions consume canonical events and decisions, never provider payloads.
+- OBS remains an output adapter through a future local overlay API and/or OBS WebSocket.
+- A future local API may expose health, connector status, history, simulation, configuration, overlay state, and real-time events. It must bind to `127.0.0.1` by default.
+- Persistence will be selected only for a concrete settings, rules, profile, analytics, recording, or memory requirement.
+- Network connectors should use configurable bounded exponential backoff with jitter, explicit disconnect, maximum delay, healthy-reset behavior, and observable state.
+
+## Observability
+
+Structured diagnostics expose connector lifecycle, normalization failures, queue overflow, subscriber failure, policy decisions, queued actions, and execution results. Raw payload logging is opt-in.
+
+## Current decisions
+
+- TikFinity is an optional adapter, not the domain.
+- Canonical events preserve raw input.
+- The simulator is first-class.
+- Core operation is local-first.
+- AI is optional.
+- OBS is an adapter.
+- Configuration is centralized and validated at startup.
+- The initial runtime is dependency-free Node.js ESM; see [ADR 0002](decisions/0002-native-node-runtime.md).
+
+Frontend, desktop shell, HTTP/WebSocket libraries, TTS provider, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.
 
