@@ -92,12 +92,20 @@ The AI Attention Engine remains unimplemented until its requirements are concret
 
 ```text
 LiveEvent -> DeterministicSpeechPolicy -> SpeechRequest -> SpeechQueue
-                                                       -> SpeechEngine (future)
+                                                       -> SpeechWorker
+                                                       -> SpeechEngine
+                                                       -> audio provider
 ```
 
 The policy currently handles supported event types, empty chat, URLs, maximum length, exact normalized duplicates, per-user cooldown, disabled users, and queue pressure. It returns an inspectable decision with a reason and priority. It does not play audio.
 
-`SpeechQueue` is bounded and provider-independent. A speech engine will later consume requests; browser, system, and cloud engines remain undecided.
+`SpeechQueue` is bounded, FIFO, and provider-independent. It provides notification-based waiting rather than polling. Closing the producer side drains existing requests and then ends the worker; immediate cancellation clears the backlog and aborts active playback.
+
+`SpeechWorker` is the only queue consumer. It awaits each engine call before taking the next request, preventing overlap. Ordinary request failures are diagnosed and isolated so later speech can continue. Permanent engine unavailability closes the queue rather than creating a repeated failure loop.
+
+`WindowsSystemSpeechEngine` is the first concrete provider. It launches one non-interactive Windows PowerShell process per utterance and uses `System.Speech.Synthesis.SpeechSynthesizer`. PowerShell source is fixed and application-owned. All dynamic values—including untrusted livestream text and configured voice names—are UTF-8 JSON encoded as Base64 and supplied through child stdin. The process is spawned with `shell: false`; stdout is consumed and stderr diagnostics are bounded. Abort or close terminates active children. See [ADR 0004](decisions/0004-windows-system-speech-engine.md).
+
+Speech playback is off by default. The Windows engine is intentionally unsupported on macOS and Linux; other providers can implement the same `speak(text, { signal })` and `close()` convention later.
 
 ## Future boundaries
 
@@ -123,5 +131,6 @@ Structured diagnostics expose connector lifecycle, normalization failures, queue
 - Configuration is centralized and validated at startup.
 - The initial runtime is dependency-free Node.js ESM; see [ADR 0002](decisions/0002-native-node-runtime.md).
 - TikFinity is an optional local WebSocket adapter; see [ADR 0003](decisions/0003-tikfinity-adapter.md).
+- Speech engines are replaceable, with Windows System.Speech as the first local provider; see [ADR 0004](decisions/0004-windows-system-speech-engine.md).
 
-Frontend, desktop shell, HTTP/WebSocket libraries, TTS provider, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.
+Frontend, desktop shell, HTTP server libraries, non-Windows TTS providers, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.

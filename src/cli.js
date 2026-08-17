@@ -6,11 +6,14 @@ import {
   SIMULATOR_SCENARIOS,
   SimulatorConnector,
   SpeechQueue,
+  SpeechWorker,
   TikFinityConnector,
+  createSpeechEngine,
   createJsonLogger,
   inspectEvent,
   loadConfig,
   normalizeTikFinityEnvelope,
+  resolveSpeechEngineType,
   runConnector,
 } from "./index.js";
 
@@ -23,7 +26,8 @@ function option(name) {
 }
 
 function positionalScenario() {
-  return process.argv.slice(2).find((value) => !value.startsWith("-"));
+  const firstArgument = process.argv[2];
+  return firstArgument && !firstArgument.startsWith("-") ? firstArgument : undefined;
 }
 
 const logger = createJsonLogger();
@@ -32,6 +36,18 @@ const config = loadConfig(process.env, diagnostics);
 const connectorChoice = option("--connector") ?? "simulator";
 const scenario = option("--scenario") ?? positionalScenario() ?? "quiet-chat";
 const includeRaw = config.inspector.includeRaw || process.argv.includes("--include-raw");
+let speechEngineType;
+
+try {
+  speechEngineType = resolveSpeechEngineType(option("--speech"), config.speechEngine.type);
+} catch (error) {
+  logger.error("cli.invalid_speech_engine", {
+    speechEngine: option("--speech"),
+    availableSpeechEngines: ["off", "windows"],
+    error: error.message,
+  });
+  process.exitCode = 1;
+}
 
 let connector;
 let normalize;
@@ -57,12 +73,16 @@ if (connectorChoice === "simulator") {
   process.exitCode = 1;
 }
 
-if (connector) {
+if (connector && speechEngineType) {
   const bus = new LiveEventBus({ ...config.eventBus, onDiagnostic: diagnostics });
   const history = new EventHistory(config.eventHistory);
   const speechPolicy = new DeterministicSpeechPolicy(config.speechPolicy);
   const speechQueue = new SpeechQueue({ ...config.speechQueue, onDiagnostic: diagnostics });
+  const speechEngine = createSpeechEngine({ type: speechEngineType, config: config.speechEngine });
   const abortController = new AbortController();
+  const speechWorker = speechEngine
+    ? new SpeechWorker({ queue: speechQueue, engine: speechEngine, onDiagnostic: diagnostics })
+    : null;
   const stop = () => {
     abortController.abort();
     void connector.close();
@@ -78,6 +98,7 @@ if (connector) {
   });
 
   process.once("SIGINT", stop);
+  speechWorker?.run(abortController.signal);
   try {
     const result = await runConnector({
       connector,
@@ -86,13 +107,25 @@ if (connector) {
       signal: abortController.signal,
       logger,
     });
+    let speechResult;
+    if (speechWorker) {
+      speechResult = await (abortController.signal.aborted ? speechWorker.cancel() : speechWorker.drain());
+    } else {
+      speechQueue.close();
+      speechResult = { status: "off", completed: 0, failed: 0 };
+    }
     logger.info("pipeline.completed", {
       connectorStatus: result.status,
       historySize: history.size,
       speechQueueSize: speechQueue.size,
+      speechEngine: speechEngineType,
+      speechStatus: speechResult.status,
+      speechCompleted: speechResult.completed,
+      speechFailed: speechResult.failed,
     });
   } finally {
     process.removeListener("SIGINT", stop);
+    if (speechWorker && !speechQueue.closed) await speechWorker.cancel();
     await connector.close();
   }
 }

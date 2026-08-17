@@ -56,3 +56,44 @@ test("falls back safely for invalid TikFinity configuration", () => {
   assert.deepEqual(config.tikfinity, DEFAULT_CONFIG.tikfinity);
   assert.equal(diagnostics.length, 3);
 });
+
+test("loads validated Windows speech engine settings", () => {
+  const config = loadConfig({
+    LIVE_ASSISTANT_SPEECH_ENGINE: "windows",
+    LIVE_ASSISTANT_SPEECH_VOICE: "Synthetic Voice",
+    LIVE_ASSISTANT_SPEECH_RATE: "-4",
+    LIVE_ASSISTANT_SPEECH_VOLUME: "75",
+  });
+  assert.deepEqual(config.speechEngine, {
+    type: "windows",
+    windows: {
+      executable: "powershell.exe",
+      voice: "Synthetic Voice",
+      rate: -4,
+      volume: 75,
+    },
+  });
+});
+
+test("invalid speech settings fall back with configuration diagnostics", () => {
+  const diagnostics = [];
+  const config = loadConfig({
+    LIVE_ASSISTANT_SPEECH_ENGINE: "cloud",
+    LIVE_ASSISTANT_SPEECH_VOICE: "",
+    LIVE_ASSISTANT_SPEECH_RATE: "11",
+    LIVE_ASSISTANT_SPEECH_VOLUME: "101",
+  }, (value) => diagnostics.push(value));
+  assert.deepEqual(config.speechEngine, DEFAULT_CONFIG.speechEngine);
+  assert.equal(diagnostics.length, 4);
+});
+
+test("empty numeric speech settings do not become zero implicitly", () => {
+  const diagnostics = [];
+  const config = loadConfig({
+    LIVE_ASSISTANT_SPEECH_RATE: "",
+    LIVE_ASSISTANT_SPEECH_VOLUME: "",
+  }, (value) => diagnostics.push(value));
+  assert.equal(config.speechEngine.windows.rate, 0);
+  assert.equal(config.speechEngine.windows.volume, 100);
+  assert.equal(diagnostics.length, 2);
+});

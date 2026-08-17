@@ -22,6 +22,15 @@ export const DEFAULT_CONFIG = Object.freeze({
     disabledUserIds: Object.freeze([]),
   }),
   speechQueue: Object.freeze({ maxQueue: 64 }),
+  speechEngine: Object.freeze({
+    type: "off",
+    windows: Object.freeze({
+      executable: "powershell.exe",
+      voice: null,
+      rate: 0,
+      volume: 100,
+    }),
+  }),
   inspector: Object.freeze({ includeRaw: false }),
 });
 
@@ -44,6 +53,11 @@ const BOOLEAN_FIELDS = [
 const NUMBER_FIELDS = [
   ["LIVE_ASSISTANT_TIKFINITY_RECONNECT_MULTIPLIER", "tikfinity.reconnect", "multiplier", (value) => value >= 1],
   ["LIVE_ASSISTANT_TIKFINITY_RECONNECT_JITTER_RATIO", "tikfinity.reconnect", "jitterRatio", (value) => value >= 0 && value <= 1],
+];
+
+const INTEGER_RANGE_FIELDS = [
+  ["LIVE_ASSISTANT_SPEECH_RATE", "speechEngine.windows", "rate", -10, 10],
+  ["LIVE_ASSISTANT_SPEECH_VOLUME", "speechEngine.windows", "volume", 0, 100],
 ];
 
 function positiveInteger(value) {
@@ -83,6 +97,10 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
       disabledUserIds: [...DEFAULT_CONFIG.speechPolicy.disabledUserIds],
     },
     speechQueue: { ...DEFAULT_CONFIG.speechQueue },
+    speechEngine: {
+      ...DEFAULT_CONFIG.speechEngine,
+      windows: { ...DEFAULT_CONFIG.speechEngine.windows },
+    },
     inspector: { ...DEFAULT_CONFIG.inspector },
   };
 
@@ -109,6 +127,30 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
     const target = sectionAt(config, section);
     if (!Number.isFinite(value) || !predicate(value)) invalid(onDiagnostic, environmentName, raw, target[field]);
     else target[field] = value;
+  }
+
+  for (const [environmentName, section, field, minimum, maximum] of INTEGER_RANGE_FIELDS) {
+    const raw = environment[environmentName];
+    if (raw === undefined) continue;
+    const value = Number(raw);
+    const target = sectionAt(config, section);
+    if (raw.length === 0 || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
+      invalid(onDiagnostic, environmentName, raw, target[field]);
+    } else {
+      target[field] = value;
+    }
+  }
+
+  const speechEngine = environment.LIVE_ASSISTANT_SPEECH_ENGINE;
+  if (speechEngine !== undefined) {
+    if (speechEngine === "off" || speechEngine === "windows") config.speechEngine.type = speechEngine;
+    else invalid(onDiagnostic, "LIVE_ASSISTANT_SPEECH_ENGINE", speechEngine, config.speechEngine.type);
+  }
+
+  const speechVoice = environment.LIVE_ASSISTANT_SPEECH_VOICE;
+  if (speechVoice !== undefined) {
+    if (speechVoice.trim().length > 0) config.speechEngine.windows.voice = speechVoice;
+    else invalid(onDiagnostic, "LIVE_ASSISTANT_SPEECH_VOICE", speechVoice, config.speechEngine.windows.voice);
   }
 
   const url = environment.LIVE_ASSISTANT_TIKFINITY_URL;
