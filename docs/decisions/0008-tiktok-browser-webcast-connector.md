@@ -20,9 +20,9 @@ The minimal protobufjs schema is derived from PirateTok/live-js revision `ad822c
 
 - Chrome must already be running locally with remote debugging and a non-default persistent profile.
 - The user manually logs into TikTok; Live Assistant never receives the password or reads cookies/browser storage.
-- The owned page consumes browser RAM, but livestream FLV/HLS/MP4/M4S downloads are blocked by default.
+- The owned page consumes browser RAM, but media, images, fonts, and known livestream audio/video paths are blocked by default. It is intentionally not a viewing browser.
 - The CDP endpoint is restricted to `localhost`, `127.0.0.1`, or `::1` and must not be exposed to a LAN.
-- Chrome can replace its Webcast socket without a page restart. A stale socket or full CDP loss triggers bounded recovery.
+- Chrome can replace its Webcast socket without a page restart. Frame silence is not a health signal. Only explicit closure of the final selected socket starts a replacement timeout; expiry or full CDP/target loss triggers bounded recovery.
 - Shutdown closes only Live Assistant's target and CDP socket. It never sends `Browser.close`, terminates Chrome, deletes the profile, or logs the user out.
 - The Webcast protocol is unofficial and can change. Its connector, decoder, and normalizer isolation confines future repairs.
 - Direct anonymous `ttwid` acquisition, automatic login, anti-bot bypass, DOM scraping, and TikFinity removal remain explicitly rejected.

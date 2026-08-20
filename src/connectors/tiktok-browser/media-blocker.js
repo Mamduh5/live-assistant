@@ -3,6 +3,12 @@ const MEDIA_URL_MARKERS = Object.freeze([
   ".m3u8",
   ".mp4",
   ".m4s",
+  ".webm",
+  ".mp3",
+  ".aac",
+  ".m4a",
+  ".ogg",
+  ".wav",
   "pull-flv",
   "pull-hls",
 ]);
@@ -12,9 +18,11 @@ function errorMessage(error) {
   return message.replace(/(?:https?|wss?):\/\/\S+/giu, "[redacted-url]").replace(/[\r\n\t]/gu, " ").slice(0, 240);
 }
 
-export function shouldBlockTikTokMedia({ url, resourceType } = {}) {
-  if (resourceType === "Media") return true;
-  if (typeof url !== "string") return false;
+export function classifyTikTokPresentationRequest({ url, resourceType } = {}) {
+  if (resourceType === "Media") return "media";
+  if (resourceType === "Image") return "image";
+  if (resourceType === "Font") return "font";
+  if (typeof url !== "string") return null;
   let classifiedUrl;
   try {
     const parsed = new URL(url);
@@ -23,7 +31,11 @@ export function shouldBlockTikTokMedia({ url, resourceType } = {}) {
     [classifiedUrl] = url.split(/[?#]/u, 1);
   }
   const lower = classifiedUrl.toLowerCase();
-  return MEDIA_URL_MARKERS.some((marker) => lower.includes(marker));
+  return MEDIA_URL_MARKERS.some((marker) => lower.includes(marker)) ? "media" : null;
+}
+
+export function shouldBlockTikTokMedia(request) {
+  return classifyTikTokPresentationRequest(request) !== null;
 }
 
 export async function installTikTokMediaBlocker(client, {
@@ -36,34 +48,24 @@ export async function installTikTokMediaBlocker(client, {
   const pending = new Set();
 
   const resolvePausedRequest = async (params) => {
-    const blocked = shouldBlockTikTokMedia({
+    const category = classifyTikTokPresentationRequest({
       url: params.request?.url,
       resourceType: params.resourceType,
     });
+    const blocked = category !== null;
     const method = blocked ? "Fetch.failRequest" : "Fetch.continueRequest";
     const commandParams = blocked
       ? { requestId: params.requestId, errorReason: "Aborted" }
       : { requestId: params.requestId };
     try {
       await client.send(method, commandParams, { sessionId });
-      if (blocked) onBlocked();
+      if (blocked) onBlocked(category);
     } catch (error) {
       onDiagnostic({
         code: "tiktok_browser.media_request_resolution_failed",
         action: blocked ? "block" : "continue",
         error: errorMessage(error),
       });
-      if (blocked && !closing) {
-        try {
-          await client.send("Fetch.continueRequest", { requestId: params.requestId }, { sessionId });
-        } catch (fallbackError) {
-          onDiagnostic({
-            code: "tiktok_browser.media_request_resolution_failed",
-            action: "fallback_continue",
-            error: errorMessage(fallbackError),
-          });
-        }
-      }
     }
   };
 

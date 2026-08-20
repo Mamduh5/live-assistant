@@ -72,20 +72,86 @@ async function until(predicate) {
   throw new Error('condition timed out');
 }
 
-function connectorHarness({ maxQueuedEvents = DEFAULT_CONFIG.tiktokBrowser.maxQueuedEvents } = {}) {
+class FakeTimers {
+  now = 0; nextId = 1; tasks = new Map();
+  set = (callback, delayMs) => {
+    const id = this.nextId++; this.tasks.set(id, { callback, due: this.now + delayMs }); return id;
+  };
+  clear = (id) => { this.tasks.delete(id); };
+  advance(delayMs) {
+    const target = this.now + delayMs;
+    while (true) {
+      const entry = [...this.tasks.entries()].sort((a, b) => a[1].due - b[1].due)[0];
+      if (!entry || entry[1].due > target) break;
+      this.now = entry[1].due; this.tasks.delete(entry[0]); entry[1].callback();
+    }
+    this.now = target;
+  }
+}
+
+function connectorHarness({ maxQueuedEvents = DEFAULT_CONFIG.tiktokBrowser.maxQueuedEvents, replacementSocketTimeoutMs = 1_000 } = {}) {
   const sockets = []; const waits = []; const states = []; const diagnostics = [];
+  const timers = new FakeTimers();
   const connector = new TikTokBrowserConnector({
     ...DEFAULT_CONFIG.tiktokBrowser, username: 'synthetic_user', maxQueuedEvents, navigationTimeoutMs: 1_000,
-    webcastSocketTimeoutMs: 1_000, staleSocketTimeoutMs: 1_000,
+    webcastSocketTimeoutMs: 1_000, replacementSocketTimeoutMs,
     reconnect: { initialDelayMs: 10, maxDelayMs: 20, multiplier: 2, jitterRatio: 0 },
     fetchImpl: async () => ({ ok: true, text: async () => JSON.stringify({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/synthetic' }) }),
     webSocketFactory: () => { const socket = new AutoSocket(); sockets.push(socket); queueMicrotask(() => socket.open()); return socket; },
     sleep: (delayMs, signal) => new Promise((resolve) => { waits.push({ delayMs, resolve }); signal.addEventListener('abort', resolve, { once: true }); }),
-    random: () => 0.5, onDiagnostic: (value) => diagnostics.push(value),
+    random: () => 0.5, onDiagnostic: (value) => diagnostics.push(value), setTimer: timers.set, clearTimer: timers.clear,
   });
   connector.subscribeState((state) => states.push(state));
-  return { connector, sockets, waits, states, diagnostics };
+  return { connector, sockets, waits, states, diagnostics, timers };
 }
+
+test("an open Webcast socket remains healthy through five and thirty minutes of frame silence", async () => {
+  const h = connectorHarness(); const iterator = h.connector.events()[Symbol.asyncIterator](); const next = iterator.next();
+  await until(() => h.connector.state === 'connected');
+  const navigationCount = () => h.sockets.flatMap(({ sent }) => sent).filter(({ method }) => method === 'Page.navigate').length;
+  h.timers.advance(5 * 60_000);
+  assert.equal(h.connector.state, 'connected'); assert.equal(navigationCount(), 1); assert.equal(h.sockets.length, 1);
+  h.timers.advance(25 * 60_000);
+  assert.equal(h.connector.state, 'connected'); assert.equal(navigationCount(), 1); assert.equal(h.sockets.length, 1);
+  await h.connector.close(); assert.equal((await next).done, true); assert.equal(h.timers.tasks.size, 0);
+});
+
+test("closing one of two selected sockets keeps the session connected", async () => {
+  const h = connectorHarness(); const iterator = h.connector.events()[Symbol.asyncIterator](); const next = iterator.next();
+  await until(() => h.connector.state === 'connected'); const socket = h.sockets[0];
+  socket.message({ method: 'Network.webSocketCreated', sessionId: 'flat-session', params: { requestId: 'webcast-2', url: 'wss://webcast-ws.eu.tiktok.com/webcast/im/ws_proxy/replacement/' } });
+  socket.message({ method: 'Network.webSocketClosed', sessionId: 'flat-session', params: { requestId: 'webcast-1' } });
+  assert.equal(h.connector.state, 'connected'); assert.equal(h.timers.tasks.size, 0);
+  await h.connector.close(); assert.equal((await next).done, true);
+});
+
+test("the last socket waits for a replacement without recreating the page", async () => {
+  const h = connectorHarness({ replacementSocketTimeoutMs: 5_000 }); const iterator = h.connector.events()[Symbol.asyncIterator](); const next = iterator.next();
+  await until(() => h.connector.state === 'connected'); const socket = h.sockets[0];
+  socket.message({ method: 'Network.webSocketClosed', sessionId: 'flat-session', params: { requestId: 'webcast-1' } });
+  h.timers.advance(4_999);
+  assert.equal(h.connector.state, 'reconnecting'); assert.equal(socket.sent.filter(({ method }) => method === 'Page.navigate').length, 1);
+  socket.message({ method: 'Network.webSocketCreated', sessionId: 'flat-session', params: { requestId: 'replacement', url: 'wss://webcast-ws.tiktok.com/webcast/im/ws_proxy/replacement/' } });
+  h.timers.advance(10_000);
+  assert.equal(h.connector.state, 'connected'); assert.equal(socket.sent.filter(({ method }) => method === 'Page.navigate').length, 1); assert.equal(h.timers.tasks.size, 0);
+  await h.connector.close(); assert.equal((await next).done, true);
+});
+
+test("replacement timeout and owned target crash recover the owned session", async () => {
+  const timed = connectorHarness({ replacementSocketTimeoutMs: 500 }); const timedIterator = timed.connector.events()[Symbol.asyncIterator](); const timedNext = timedIterator.next();
+  await until(() => timed.connector.state === 'connected');
+  timed.sockets[0].message({ method: 'Network.webSocketClosed', sessionId: 'flat-session', params: { requestId: 'webcast-1' } });
+  timed.timers.advance(500); await until(() => timed.waits.length === 1);
+  assert.equal(timed.sockets[0].sent.some(({ method }) => method === 'Target.closeTarget'), true);
+  await timed.connector.close(); assert.equal((await timedNext).done, true); assert.equal(timed.timers.tasks.size, 0);
+
+  const crashed = connectorHarness(); const crashedIterator = crashed.connector.events()[Symbol.asyncIterator](); const crashedNext = crashedIterator.next();
+  await until(() => crashed.connector.state === 'connected');
+  crashed.sockets[0].message({ method: 'Target.targetCrashed', params: { targetId: 'owned-page' } });
+  await until(() => crashed.waits.length === 1);
+  assert.equal(crashed.sockets[0].sent.some(({ method }) => method === 'Target.closeTarget'), true);
+  await crashed.connector.close(); assert.equal((await crashedNext).done, true);
+});
 
 test("connector becomes connected only after Webcast detection, accepts replacement, decodes, and cleans up", async () => {
   const h = connectorHarness(); const iterator = h.connector.events()[Symbol.asyncIterator](); const next = iterator.next();
@@ -93,11 +159,22 @@ test("connector becomes connected only after Webcast detection, accepts replacem
   assert.deepEqual(h.states.slice(0, 3), ['idle', 'connecting', 'connected']);
   const socket = h.sockets[0];
   assert.ok(socket.sent.findIndex(({ method }) => method === 'Fetch.enable') < socket.sent.findIndex(({ method }) => method === 'Page.navigate'));
+  socket.message({ method: 'Fetch.requestPaused', sessionId: 'flat-session', params: { requestId: 'blocked-media', resourceType: 'Media', request: { url: 'https://cdn.test/live' } } });
+  socket.message({ method: 'Fetch.requestPaused', sessionId: 'flat-session', params: { requestId: 'blocked-image', resourceType: 'Image', request: { url: 'https://cdn.test/avatar' } } });
+  socket.message({ method: 'Fetch.requestPaused', sessionId: 'flat-session', params: { requestId: 'blocked-font', resourceType: 'Font', request: { url: 'https://cdn.test/font' } } });
+  await until(() => h.connector.counters.blockedRequests === 3);
+  assert.deepEqual({
+    media: h.connector.counters.blockedMediaRequests,
+    image: h.connector.counters.blockedImageRequests,
+    font: h.connector.counters.blockedFontRequests,
+  }, { media: 1, image: 1, font: 1 });
+  assert.equal(Number.isSafeInteger(h.connector.counters.blockedRequests), true);
   socket.message({ method: 'Network.webSocketClosed', sessionId: 'flat-session', params: { requestId: 'webcast-1' } });
   assert.equal(h.connector.state, 'reconnecting');
   socket.message({ method: 'Network.webSocketCreated', sessionId: 'flat-session', params: { requestId: 'webcast-2', url: 'wss://webcast-ws.eu.tiktok.com/webcast/im/ws_proxy/ws_reuse_supplement/' } });
   assert.equal(h.connector.state, 'connected');
   socket.message({ method: 'Network.webSocketFrameReceived', sessionId: 'flat-session', params: { requestId: 'webcast-2', response: { opcode: 2, payloadData: Buffer.from([0xff, 0xff]).toString('base64') } } });
+  assert.equal(h.timers.tasks.size, 0);
   const frame = encodeSyntheticWebcastFrame([{ method: 'WebcastChatMessage', data: { common: { createTime: 1 }, user: { uniqueId: 'viewer-2' }, content: 'synthetic hello' } }]);
   socket.message({ method: 'Network.webSocketFrameReceived', sessionId: 'flat-session', params: { requestId: 'webcast-2', response: { opcode: 2, payloadData: frame.toString('base64') } } });
   assert.equal((await next).value.data.content, 'synthetic hello');

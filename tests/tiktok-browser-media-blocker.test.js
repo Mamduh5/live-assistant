@@ -1,14 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { installTikTokMediaBlocker, shouldBlockTikTokMedia } from "../src/index.js";
+import { classifyTikTokPresentationRequest, installTikTokMediaBlocker, shouldBlockTikTokMedia } from "../src/index.js";
 
 const BLOCKED = [
   { resourceType: "Media", url: "https://example.test/not-obviously-media" },
+  { resourceType: "Image", url: "https://example.test/avatar" },
+  { resourceType: "Font", url: "https://example.test/typeface" },
   { resourceType: "Other", url: "https://pull-flv-w77-sg01.tiktokcdn.com/game/stream-123_sd5.flv" },
   { resourceType: "Other", url: "https://pull-f5-sg01.tiktokcdn.com/game/stream-123_sd5.flv" },
   { resourceType: "Other", url: "https://example.tiktokcdn.com/path/stream.m3u8" },
   { resourceType: "Other", url: "https://example.test/video.MP4?token=private" },
   { resourceType: "Other", url: "https://example.test/chunk.m4s" },
+  { resourceType: "Other", url: "https://example.test/video.webm" },
+  { resourceType: "Other", url: "https://example.test/audio.mp3" },
+  { resourceType: "Other", url: "https://example.test/audio.aac" },
+  { resourceType: "Other", url: "https://example.test/audio.m4a" },
+  { resourceType: "Other", url: "https://example.test/audio.ogg" },
+  { resourceType: "Other", url: "https://example.test/audio.wav" },
   { resourceType: "Other", url: "https://pull-flv.example.test/live" },
   { resourceType: "Other", url: "https://pull-hls.example.test/live" },
 ];
@@ -26,6 +34,13 @@ const CONTINUED = [
 test("media classifier blocks media types and real-shaped livestream paths", () => {
   for (const request of BLOCKED) assert.equal(shouldBlockTikTokMedia(request), true, request.url);
   for (const request of CONTINUED) assert.equal(shouldBlockTikTokMedia(request), false, request.url);
+});
+
+test("presentation classifier returns bounded accounting categories", () => {
+  assert.equal(classifyTikTokPresentationRequest(BLOCKED[0]), "media");
+  assert.equal(classifyTikTokPresentationRequest(BLOCKED[1]), "image");
+  assert.equal(classifyTikTokPresentationRequest(BLOCKED[2]), "font");
+  assert.equal(classifyTikTokPresentationRequest(CONTINUED[0]), null);
 });
 
 function blockerHarness({ failBlock = false } = {}) {
@@ -80,7 +95,7 @@ test("Fetch interception resolves every paused request and counts only successfu
   assert.equal(h.unsubscribeCalls, 1);
 });
 
-test("failed blocking falls back to continuation without leaking request URLs", async () => {
+test("failed blocking is diagnosed without a second final operation or request URL leakage", async () => {
   const h = blockerHarness({ failBlock: true });
   let blocked = 0;
   const cleanup = await installTikTokMediaBlocker(h.client, {
@@ -90,7 +105,7 @@ test("failed blocking falls back to continuation without leaking request URLs", 
   });
   h.emit({ requestId: "media-1", request: { url: "https://cdn.test/video.flv?secret=yes" }, resourceType: "Media" });
   await settle();
-  assert.deepEqual(h.calls.slice(1, 3).map(({ method }) => method), ["Fetch.failRequest", "Fetch.continueRequest"]);
+  assert.deepEqual(h.calls.slice(1).map(({ method }) => method), ["Fetch.failRequest"]);
   assert.equal(blocked, 0);
   assert.equal(JSON.stringify(h.diagnostics).includes("secret=yes"), false);
   await cleanup();

@@ -4,7 +4,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     cdpUrl: "http://127.0.0.1:9222",
     navigationTimeoutMs: 30_000,
     webcastSocketTimeoutMs: 30_000,
-    staleSocketTimeoutMs: 30_000,
+    replacementSocketTimeoutMs: 30_000,
     maxQueuedEvents: 256,
     blockMedia: true,
     reconnect: Object.freeze({ initialDelayMs: 1_000, maxDelayMs: 15_000, multiplier: 2, jitterRatio: 0.2 }),
@@ -95,7 +95,7 @@ export const DEFAULT_CONFIG = Object.freeze({
 const POSITIVE_INTEGER_FIELDS = [
   ["LIVE_ASSISTANT_TIKTOK_BROWSER_NAVIGATION_TIMEOUT_MS", "tiktokBrowser", "navigationTimeoutMs"],
   ["LIVE_ASSISTANT_TIKTOK_BROWSER_SOCKET_TIMEOUT_MS", "tiktokBrowser", "webcastSocketTimeoutMs"],
-  ["LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS", "tiktokBrowser", "staleSocketTimeoutMs"],
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_REPLACEMENT_SOCKET_TIMEOUT_MS", "tiktokBrowser", "replacementSocketTimeoutMs"],
   ["LIVE_ASSISTANT_TIKTOK_BROWSER_MAX_QUEUED_EVENTS", "tiktokBrowser", "maxQueuedEvents"],
   ["LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_INITIAL_MS", "tiktokBrowser.reconnect", "initialDelayMs"],
   ["LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MAX_MS", "tiktokBrowser.reconnect", "maxDelayMs"],
@@ -209,6 +209,13 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
     const target = sectionAt(config, section);
     if (parsed === null) invalid(onDiagnostic, environmentName, environment[environmentName], target[field]);
     else target[field] = parsed;
+  }
+
+  if (environment.LIVE_ASSISTANT_TIKTOK_BROWSER_REPLACEMENT_SOCKET_TIMEOUT_MS === undefined
+    && environment.LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS !== undefined) {
+    const parsed = positiveInteger(environment.LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS);
+    if (parsed === null) invalid(onDiagnostic, "LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS", environment.LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS, config.tiktokBrowser.replacementSocketTimeoutMs);
+    else config.tiktokBrowser.replacementSocketTimeoutMs = parsed;
   }
 
   for (const [environmentName, section, field] of BOOLEAN_FIELDS) {

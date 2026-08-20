@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { WINDOWS_SPEECH_SCRIPT, WindowsSystemSpeechEngine } from "../src/index.js";
+import { mapWindowsModernRate, mapWindowsModernVolume, WINDOWS_SPEECH_SCRIPT, WindowsSystemSpeechEngine } from "../src/index.js";
 
 class MockChild extends EventEmitter {
   stdin = new PassThrough();
@@ -73,20 +73,53 @@ test("passes voice, rate, and volume as stdin data rather than executable code",
   });
   const speaking = engine.speak("hello");
   const payload = harness.children[0].inputPayload();
-  assert.deepEqual(payload, {
+  assert.deepEqual({ ...payload, tempPath: "[temp]" }, {
     text: "hello",
     voice: "Synthetic Voice'; Write-Output nope",
     languageVoices: { en: null, th: null },
     classification: "english",
     rate: -3,
     volume: 42,
+    modernRate: 0.85,
+    modernVolume: 0.42,
+    tempPath: "[temp]",
   });
   assert.equal(JSON.stringify(harness.calls[0].args).includes(payload.voice), false);
   harness.children[0].emit("close", 0, null);
   await speaking;
 });
 
-test("passes deterministic language selection data and reports missing voices without failing playback", async () => {
+test("maps legacy rate and volume into documented modern Windows ranges", () => {
+  assert.equal(mapWindowsModernRate(-10), 0.5);
+  assert.equal(mapWindowsModernRate(0), 1);
+  assert.equal(mapWindowsModernRate(10), 6);
+  assert.equal(mapWindowsModernVolume(0), 0);
+  assert.equal(mapWindowsModernVolume(42), 0.42);
+  assert.equal(mapWindowsModernVolume(100), 1);
+});
+
+test("modern backend failure is diagnosed and remains an ordinary utterance failure", async () => {
+  const harness = spawnHarness(); const diagnostics = [];
+  const engine = new WindowsSystemSpeechEngine({ platform: "win32", spawn: harness.spawn, onDiagnostic: (value) => diagnostics.push(value) });
+  const speaking = engine.speak("สวัสดี");
+  harness.children[0].stdout.write('{"code":"speech.modern_backend_unavailable","requestedLanguage":"th-TH","reason":"playback_failed"}\n');
+  harness.children[0].stderr.write("modern helper failed");
+  harness.children[0].emit("close", 1, null);
+  await assert.rejects(speaking, { code: "speech_engine.process_failed", permanent: false });
+  assert.deepEqual(diagnostics, [{ code: "speech.modern_backend_unavailable", requestedLanguage: "th-TH", reason: "playback_failed" }]);
+});
+
+test("modern English failure can report a diagnostic and complete through legacy fallback", async () => {
+  const harness = spawnHarness(); const diagnostics = [];
+  const engine = new WindowsSystemSpeechEngine({ platform: "win32", spawn: harness.spawn, onDiagnostic: (value) => diagnostics.push(value) });
+  const speaking = engine.speak("hello");
+  harness.children[0].stdout.write('{"code":"speech.modern_backend_unavailable","requestedLanguage":"en-US","reason":"playback_failed"}\n');
+  harness.children[0].emit("close", 0, null);
+  await speaking;
+  assert.equal(diagnostics[0].code, "speech.modern_backend_unavailable");
+});
+
+test("passes deterministic language selection data and accepts bounded helper diagnostics", async () => {
   const harness = spawnHarness();
   const diagnostics = [];
   const engine = new WindowsSystemSpeechEngine({

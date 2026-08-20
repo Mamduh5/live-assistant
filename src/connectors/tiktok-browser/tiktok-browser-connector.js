@@ -37,6 +37,10 @@ function errorMessage(error) {
   return message.replace(/(?:https?|wss?):\/\/\S+/giu, '[redacted-url]').replace(/[\r\n\t]/gu, ' ').slice(0, 240);
 }
 
+function boundedIncrement(value, amount = 1) {
+  return Math.min(Number.MAX_SAFE_INTEGER, value + amount);
+}
+
 class AsyncChannel {
   #items = [];
   #waiters = [];
@@ -124,15 +128,18 @@ export class TikTokBrowserConnector {
   #random;
   #decode;
   #diagnostic;
-  #counters = { blockedMediaRequests: 0, webcastFrames: 0, webcastBytes: 0, decodedEvents: 0, decodeFailures: 0, droppedEvents: 0 };
+  #setTimer;
+  #clearTimer;
+  #counters = { blockedRequests: 0, blockedMediaRequests: 0, blockedImageRequests: 0, blockedFontRequests: 0, webcastFrames: 0, webcastBytes: 0, decodedEvents: 0, decodeFailures: 0, droppedEvents: 0 };
 
-  constructor({ username, cdpUrl, navigationTimeoutMs, webcastSocketTimeoutMs, staleSocketTimeoutMs, maxQueuedEvents, blockMedia,
+  constructor({ username, cdpUrl, navigationTimeoutMs, webcastSocketTimeoutMs, replacementSocketTimeoutMs, maxQueuedEvents, blockMedia,
     reconnect, webSocketFactory = (url) => new WebSocket(url), fetchImpl = globalThis.fetch,
-    sleep = abortableDelay, random = Math.random, decode = decodeWebcastFrame, onDiagnostic = () => {} }) {
+    sleep = abortableDelay, random = Math.random, decode = decodeWebcastFrame, onDiagnostic = () => {},
+    setTimer = setTimeout, clearTimer = clearTimeout }) {
     const normalized = normalizeTikTokUsername(username);
     if (!normalized) throw new TypeError('TikTok browser username must be 2-24 letters, numbers, dots, or underscores');
     validateCdpUrl(cdpUrl);
-    for (const [name, value] of Object.entries({ navigationTimeoutMs, webcastSocketTimeoutMs, staleSocketTimeoutMs, maxQueuedEvents })) {
+    for (const [name, value] of Object.entries({ navigationTimeoutMs, webcastSocketTimeoutMs, replacementSocketTimeoutMs, maxQueuedEvents })) {
       if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer`);
     }
     if (typeof blockMedia !== 'boolean') throw new TypeError('blockMedia must be boolean');
@@ -142,9 +149,10 @@ export class TikTokBrowserConnector {
       || !Number.isFinite(reconnect.jitterRatio) || reconnect.jitterRatio < 0 || reconnect.jitterRatio > 1) {
       throw new TypeError('Invalid TikTok browser reconnect configuration');
     }
-    this.#config = { username: normalized, cdpUrl, navigationTimeoutMs, webcastSocketTimeoutMs, staleSocketTimeoutMs, maxQueuedEvents, blockMedia, reconnect: { ...reconnect } };
+    this.#config = { username: normalized, cdpUrl, navigationTimeoutMs, webcastSocketTimeoutMs, replacementSocketTimeoutMs, maxQueuedEvents, blockMedia, reconnect: { ...reconnect } };
     this.#webSocketFactory = webSocketFactory; this.#fetch = fetchImpl; this.#sleep = sleep; this.#random = random;
     this.#decode = decode; this.#diagnostic = onDiagnostic;
+    this.#setTimer = setTimer; this.#clearTimer = clearTimer;
   }
 
   get state() { return this.#state; }
@@ -249,34 +257,47 @@ export class TikTokBrowserConnector {
       ? await installTikTokMediaBlocker(client, {
         sessionId: owned.sessionId,
         signal,
-        onBlocked: () => { this.#counters.blockedMediaRequests += 1; },
+        onBlocked: (category) => {
+          this.#counters.blockedRequests = boundedIncrement(this.#counters.blockedRequests);
+          const field = category === 'image' ? 'blockedImageRequests' : category === 'font' ? 'blockedFontRequests' : 'blockedMediaRequests';
+          this.#counters[field] = boundedIncrement(this.#counters[field]);
+        },
         onDiagnostic: (value) => this.#emitDiagnostic(value),
       })
       : async () => {};
     const selected = new Set();
     const socketSeen = deferred();
-    let connected = false;
-    let staleTimer;
-    const resetStale = () => {
-      clearTimeout(staleTimer);
-      staleTimer = setTimeout(() => {
-        if (!signal.aborted) { this.#transition('reconnecting'); channel.close(new Error('Webcast socket became stale')); }
-      }, this.#config.staleSocketTimeoutMs);
+    let replacementTimer;
+    const clearReplacementTimer = () => {
+      if (replacementTimer === undefined) return;
+      this.#clearTimer(replacementTimer);
+      replacementTimer = undefined;
+    };
+    const waitForReplacement = () => {
+      clearReplacementTimer();
+      replacementTimer = this.#setTimer(() => {
+        replacementTimer = undefined;
+        if (!signal.aborted && selected.size === 0) channel.close(new Error('Webcast replacement socket did not appear'));
+      }, this.#config.replacementSocketTimeoutMs);
     };
     const off = [
       client.subscribe('Network.webSocketCreated', ({ requestId, url }) => {
         if (!isTikTokWebcastSocket(url)) return;
         if (selected.size >= MAX_SELECTED_SOCKETS) selected.delete(selected.values().next().value);
-        selected.add(requestId); connected = true; socketSeen.resolve(); resetStale();
+        selected.add(requestId); clearReplacementTimer(); socketSeen.resolve();
         this.#transition('connected'); this.#emitDiagnostic({ code: 'tiktok_browser.webcast_connected', endpoint: sanitizedUrl(url) });
       }, { sessionId: owned.sessionId }),
       client.subscribe('Network.webSocketClosed', ({ requestId }) => {
         if (!selected.delete(requestId)) return;
-        if (selected.size === 0) { connected = false; this.#transition('reconnecting'); this.#emitDiagnostic({ code: 'tiktok_browser.webcast_disconnected' }); resetStale(); }
+        if (selected.size === 0) {
+          this.#transition('reconnecting');
+          this.#emitDiagnostic({ code: 'tiktok_browser.webcast_disconnected', replacementTimeoutMs: this.#config.replacementSocketTimeoutMs });
+          waitForReplacement();
+        }
       }, { sessionId: owned.sessionId }),
       client.subscribe('Network.webSocketFrameReceived', (params) => {
         const bytes = binaryFrameFromCdp(params, selected); if (!bytes) return;
-        resetStale(); this.#counters.webcastFrames += 1; this.#counters.webcastBytes += bytes.byteLength;
+        this.#counters.webcastFrames += 1; this.#counters.webcastBytes += bytes.byteLength;
         try {
           const decoded = this.#decode(bytes); this.#counters.decodedEvents += decoded.length;
           for (const event of decoded) if (!signal.aborted) channel.push(event);
@@ -295,10 +316,10 @@ export class TikTokBrowserConnector {
     const cleanup = async () => {
       if (cleaned) return;
       cleaned = true;
-      clearTimeout(staleTimer);
+      clearReplacementTimer();
       for (const unsubscribe of off) unsubscribe();
       await stopMediaBlocker();
-      if (connected) selected.clear();
+      selected.clear();
       channel.close();
       if (this.#sessionCleanup === cleanup) this.#sessionCleanup = undefined;
     };

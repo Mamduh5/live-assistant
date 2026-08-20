@@ -30,7 +30,7 @@ TikFinity / TikTok Browser / Simulator -> LiveAssistantRuntime -> local control 
 
 The only runtime package dependency is `protobufjs`, used by the local TikTok Webcast decoder. Simulator and TikFinity passthrough/deterministic operation requires no AI provider. AI Attention is an explicit opt-in that sends selected chat text to OpenAI and requires `OPENAI_API_KEY`.
 
-Local audio playback currently requires Windows PowerShell and an installed `System.Speech` voice. Speech remains off by default.
+Local audio playback currently requires Windows PowerShell. The Windows provider uses modern `Windows.Media.SpeechSynthesis` voices when available and retains legacy `System.Speech` as an English fallback. Speech remains off by default.
 
 ## Run it
 
@@ -91,7 +91,13 @@ node src/cli.js `
 
 Open `http://127.0.0.1:4820/`. Add `--speech=windows` for optional local TTS; `--attention=ai` remains a separate opt-in requiring OpenAI configuration. A leading `@` in `--tiktok-user` is accepted. `LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME` can provide the username instead.
 
-Media blocking is enabled by default. CDP Fetch interception is installed before navigation; `Media` requests and URLs classified locally as FLV, HLS/m3u8, MP4, M4S, `pull-flv`, or `pull-hls` are aborted, while every other paused request is explicitly continued. Document, script, fetch/XHR, CSS, API, and WebSocket requests are not blocked unless their URL explicitly contains one of those media markers. Live Assistant does not inspect cookies, browser storage, password data, authorization headers, or browser profile files. Status and diagnostics omit request URLs, debugger/WebSocket queries, and headers; canonical `raw` contains only the bounded decoded event, never binary frames or complete CDP messages.
+While the dashboard run is active, inspect categorized blocker accounting without exposing request URLs:
+
+```powershell
+(Invoke-RestMethod http://127.0.0.1:4820/api/v1/status).connector.counters | Format-List
+```
+
+Media blocking is enabled by default. CDP Fetch interception is installed before navigation; all `Media`, `Image`, and `Font` requests are aborted. Any request whose sanitized host/path contains `.flv`, `.m3u8`, `.mp4`, `.m4s`, `.webm`, `.mp3`, `.aac`, `.m4a`, `.ogg`, `.wav`, `pull-flv`, or `pull-hls` is also aborted. Every other paused request is explicitly continued. Document, script, stylesheet, normal fetch/XHR, API, and WebSocket traffic remains available. The owned page is an event transport and is intentionally bandwidth-minimized, so it may look mostly blank. Live Assistant does not inspect cookies, browser storage, password data, authorization headers, or browser profile files. Status and diagnostics omit request URLs, debugger/WebSocket queries, and headers; canonical `raw` contains only the bounded decoded event, never binary frames or complete CDP messages.
 
 Supported native mappings are:
 
@@ -107,7 +113,7 @@ WebcastSubNotifyMessage   -> subscription.started
 
 `WebcastMemberMessage` is schema-supported and decoded in compatibility tests, but is suppressed at runtime because v1 has no canonical join event. Unselected protocol housekeeping is also suppressed. Malformed selected messages remain isolated and later frames continue.
 
-The connector reports `connected` only after a matching active Webcast socket appears. Chrome may replace that socket without replacing the page; the connector accepts the replacement within a bounded stale window. Full CDP loss, target loss, initial socket timeout, or prolonged Webcast loss cleans up local state and retries with bounded exponential backoff. Shutdown closes only Live Assistant's page and CDP connection—it never closes Chrome, deletes the profile, or logs you out.
+The connector reports `connected` only after a matching active Webcast socket appears. An open Webcast socket is healthy regardless of how long it is quiet; frame silence never causes navigation or recovery. If the last selected socket explicitly closes, Chrome gets a bounded replacement-socket window to create another socket without reloading the page. Only replacement timeout, full CDP loss, target loss, or initial socket timeout recovers the owned target/session. Shutdown closes only Live Assistant's page and CDP connection—it never closes Chrome, deletes the profile, or logs you out.
 
 Available environment overrides are:
 
@@ -116,7 +122,7 @@ LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME
 LIVE_ASSISTANT_TIKTOK_BROWSER_CDP_URL
 LIVE_ASSISTANT_TIKTOK_BROWSER_NAVIGATION_TIMEOUT_MS
 LIVE_ASSISTANT_TIKTOK_BROWSER_SOCKET_TIMEOUT_MS
-LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS
+LIVE_ASSISTANT_TIKTOK_BROWSER_REPLACEMENT_SOCKET_TIMEOUT_MS
 LIVE_ASSISTANT_TIKTOK_BROWSER_MAX_QUEUED_EVENTS
 LIVE_ASSISTANT_TIKTOK_BROWSER_BLOCK_MEDIA
 LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_INITIAL_MS
@@ -125,15 +131,23 @@ LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MULTIPLIER
 LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_JITTER_RATIO
 ```
 
+The former `LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS` is accepted temporarily as a deprecated alias for the replacement timeout; it no longer represents frame silence.
+
 Only `localhost`, `127.0.0.1`, and `::1` CDP hosts are accepted. The Webcast protocol is unofficial and TikTok changes may break decoding. Real chat, like, room-user, and member frames were observed in the preflight experiment; follow, share, gift, and subscription still require manual real-LIVE validation.
 
 Manual acceptance test: start dedicated Chrome, log in if necessary, start the creator's LIVE normally, run the command above, then send a unique comment and likes from a second account. Confirm the connector reaches `connected`, chat/likes/viewer count appear canonically, the dashboard and Attention continue operating, and the owned page does not download FLV/HLS video. Follow/share and Windows speech can then be checked optionally.
 
 Configuration is centralized in `src/config/defaults.js`. A small set of safe tuning values can be overridden through environment variables; invalid overrides fall back to defaults with a diagnostic. TikFinity supports `LIVE_ASSISTANT_TIKFINITY_URL`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_INITIAL_MS`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_MAX_MS`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_MULTIPLIER`, and `LIVE_ASSISTANT_TIKFINITY_RECONNECT_JITTER_RATIO`. Set `LIVE_ASSISTANT_INSPECT_RAW=true` or pass `--include-raw` to explicitly include upstream payloads in inspector output.
 
-Speech supports `LIVE_ASSISTANT_SPEECH_ENGINE=off|windows`, `LIVE_ASSISTANT_SPEECH_VOICE`, `LIVE_ASSISTANT_SPEECH_VOICE_EN`, `LIVE_ASSISTANT_SPEECH_VOICE_TH`, `LIVE_ASSISTANT_SPEECH_RATE` (`-10` to `10`), and `LIVE_ASSISTANT_SPEECH_VOLUME` (`0` to `100`). `--speech=off|windows` overrides the configured engine for one CLI run. A valid global voice override takes precedence. Otherwise Thai-script text prefers an installed `th-*` voice, Latin text prefers an installed `en-*` voice, and mixed/unknown text uses the configured/default English fallback. Detection is conservative Unicode script classification, not semantic language detection.
+Speech supports `LIVE_ASSISTANT_SPEECH_ENGINE=off|windows`, `LIVE_ASSISTANT_SPEECH_VOICE`, `LIVE_ASSISTANT_SPEECH_VOICE_EN`, `LIVE_ASSISTANT_SPEECH_VOICE_TH`, `LIVE_ASSISTANT_SPEECH_RATE` (`-10` to `10`), and `LIVE_ASSISTANT_SPEECH_VOLUME` (`0` to `100`). `--speech=off|windows` overrides the configured engine for one CLI run. A valid language-appropriate global voice override takes precedence. Otherwise Thai-script text prefers the configured Thai voice, then modern `th-*` voices with Pattara preferred; Latin text prefers its configured English voice, then installed `en-*` voices. Mixed/unknown text uses the deterministic English fallback. Detection is conservative Unicode script classification, not semantic language detection.
 
-Windows multilingual TTS requires the corresponding voice to be installed and visible to `System.Speech`. If Thai text arrives without a `th-*` voice, the engine emits `speech.voice_unavailable` with `requestedLanguage: th-TH` and uses the configured/default English fallback without stopping the FIFO worker. Inspect the current `System.Speech` inventory in PowerShell without playing audio:
+Windows can have OneCore/modern voices that legacy `System.Speech` does not expose. Microsoft Pattara is installed on the validation machine and is visible through `Windows.Media.SpeechSynthesis` as `th-TH`, even though the legacy inventory contains only David and Zira. List modern voices without playing audio:
+
+```powershell
+node --input-type=module -e "import('./src/index.js').then(async ({discoverWindowsModernSpeechVoices}) => console.log(JSON.stringify(await discoverWindowsModernSpeechVoices(), null, 2)))"
+```
+
+For comparison, inspect the legacy inventory:
 
 ```powershell
 Add-Type -AssemblyName System.Speech
@@ -143,7 +157,7 @@ $s.GetInstalledVoices() |
   Select-Object Name, Culture, Gender
 ```
 
-The exported `discoverWindowsSystemSpeechVoices()` provider returns only `name`, `language`, optional `gender`, and `enabled`; it never returns registry paths. On the validation machine, only Microsoft David Desktop and Microsoft Zira Desktop (`en-US`) were exposed. Do not assume a Thai voice is installed after adding a Windows language pack—confirm it with the command above.
+Both discovery providers return only bounded `name`, `language`, optional `gender`, `backend`, and `enabled` metadata; internal voice identifiers and registry paths are excluded. If modern Thai playback fails, the provider emits `speech.modern_backend_unavailable` and does not pretend David/Zira is a correct Thai voice. English can fall back to the working legacy backend, and one failed utterance does not permanently stop the FIFO worker.
 
 Speech requests remain FIFO. The worker waits without polling, speaks one request at a time, and isolates ordinary provider failures. A finite connector run closes the producer side and drains queued speech before exit. Ctrl+C cancels the active PowerShell child, clears remaining speech, and exits promptly.
 
