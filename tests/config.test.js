@@ -88,6 +88,8 @@ test("loads validated Windows speech engine settings", () => {
   const config = loadConfig({
     LIVE_ASSISTANT_SPEECH_ENGINE: "windows",
     LIVE_ASSISTANT_SPEECH_VOICE: "Synthetic Voice",
+    LIVE_ASSISTANT_SPEECH_VOICE_EN: "English Voice",
+    LIVE_ASSISTANT_SPEECH_VOICE_TH: "Thai Voice",
     LIVE_ASSISTANT_SPEECH_RATE: "-4",
     LIVE_ASSISTANT_SPEECH_VOLUME: "75",
   });
@@ -96,6 +98,7 @@ test("loads validated Windows speech engine settings", () => {
     windows: {
       executable: "powershell.exe",
       voice: "Synthetic Voice",
+      languageVoices: { en: "English Voice", th: "Thai Voice" },
       rate: -4,
       volume: 75,
     },
@@ -122,6 +125,7 @@ test("empty numeric speech settings do not become zero implicitly", () => {
   }, (value) => diagnostics.push(value));
   assert.equal(config.speechEngine.windows.rate, 0);
   assert.equal(config.speechEngine.windows.volume, 100);
+  assert.deepEqual(config.speechEngine.windows.languageVoices, { en: null, th: null });
   assert.equal(diagnostics.length, 2);
 });
 

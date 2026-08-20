@@ -29,9 +29,10 @@ export {
 } from "./connectors/simulator-connector.js";
 export { TikFinityConnector, abortableDelay } from "./connectors/tikfinity-connector.js";
 export {
-  TikTokBrowserConnector, MEDIA_BLOCK_PATTERNS, binaryFrameFromCdp, closeOwnedTarget,
+  TikTokBrowserConnector, binaryFrameFromCdp, closeOwnedTarget,
   createOwnedTarget, navigateOwnedTarget, isTikTokWebcastSocket, normalizeTikTokUsername,
 } from "./connectors/tiktok-browser/tiktok-browser-connector.js";
+export { installTikTokMediaBlocker, shouldBlockTikTokMedia } from "./connectors/tiktok-browser/media-blocker.js";
 export { CdpClient, CdpProtocolError, discoverBrowserWebSocket, sanitizedUrl, validateCdpUrl, waitForWebSocketOpen } from "./connectors/tiktok-browser/cdp-client.js";
 export { decodeWebcastFrame, encodeSyntheticWebcastFrame, SUPPORTED_WEBCAST_METHODS } from "./connectors/tiktok-browser/webcast-decoder.js";
 export { EventHistory } from "./events/event-history.js";
@@ -58,3 +59,5 @@ export { SpeechEngineError, assertSpeechEngine, isSpeechCancellation } from "./s
 export { SpeechQueue } from "./speech/speech-queue.js";
 export { SpeechWorker } from "./speech/speech-worker.js";
 export { WINDOWS_SPEECH_SCRIPT, WindowsSystemSpeechEngine } from "./speech/windows-system-speech-engine.js";
+export { discoverWindowsSystemSpeechVoices, sanitizeWindowsVoiceInventory, WINDOWS_VOICE_DISCOVERY_SCRIPT } from "./speech/windows-voice-discovery.js";
+export { detectSpeechScript, selectWindowsSpeechVoice } from "./speech/windows-voice-selection.js";

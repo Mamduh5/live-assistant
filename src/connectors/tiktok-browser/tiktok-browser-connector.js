@@ -1,10 +1,7 @@
 import { abortableDelay } from "../tikfinity-connector.js";
 import { CdpClient, discoverBrowserWebSocket, sanitizedUrl, validateCdpUrl, waitForWebSocketOpen } from "./cdp-client.js";
 import { decodeWebcastFrame } from "./webcast-decoder.js";
-
-export const MEDIA_BLOCK_PATTERNS = Object.freeze([
-  "*.flv*", "*.m3u8*", "*.mp4*", "*.m4s*", "*pull-flv*", "*pull-hls*",
-]);
+import { installTikTokMediaBlocker } from "./media-blocker.js";
 const MAX_SELECTED_SOCKETS = 8;
 
 export function normalizeTikTokUsername(value) {
@@ -85,14 +82,13 @@ function withTimeout(operation, timeoutMs, signal, message) {
   });
 }
 
-export async function createOwnedTarget(client, { username, blockMedia, signal, navigate = true }) {
+export async function createOwnedTarget(client, { username, signal, navigate = true }) {
   const { targetId } = await client.send('Target.createTarget', { url: 'about:blank' }, { signal });
   let sessionId;
   try {
     ({ sessionId } = await client.send('Target.attachToTarget', { targetId, flatten: true }, { signal }));
     await client.send('Network.enable', {}, { sessionId, signal });
     await client.send('Page.enable', {}, { sessionId, signal });
-    if (blockMedia) await client.send('Network.setBlockedURLs', { urls: [...MEDIA_BLOCK_PATTERNS] }, { sessionId, signal });
     if (navigate) await navigateOwnedTarget(client, { username, sessionId, signal });
     return { targetId, sessionId };
   } catch (error) {
@@ -121,6 +117,7 @@ export class TikTokBrowserConnector {
   #stopController;
   #client;
   #targetId;
+  #sessionCleanup;
   #webSocketFactory;
   #fetch;
   #sleep;
@@ -161,6 +158,7 @@ export class TikTokBrowserConnector {
 
   async close() {
     this.#stopController?.abort();
+    await this.#sessionCleanup?.();
     const targetId = this.#targetId;
     this.#targetId = undefined;
     const client = this.#client;
@@ -187,7 +185,7 @@ export class TikTokBrowserConnector {
           this.#counters.droppedEvents += 1;
           if (this.#counters.droppedEvents <= 5 || this.#counters.droppedEvents % 100 === 0) this.#emitDiagnostic({ code: 'tiktok_browser.event_queue_overflow', droppedEvents: this.#counters.droppedEvents });
         });
-        let cleanup = () => {};
+        let cleanup = async () => {};
         try {
           cleanup = await this.#openSession(channel, lifecycleSignal);
           delayBase = this.#config.reconnect.initialDelayMs;
@@ -204,7 +202,7 @@ export class TikTokBrowserConnector {
             : message.includes('navigation') ? 'tiktok_browser.navigation_failed' : 'tiktok_browser.cdp_failed';
           this.#emitDiagnostic({ code, attempt, error: message });
         } finally {
-          cleanup();
+          await cleanup();
           const targetId = this.#targetId;
           this.#targetId = undefined;
           const client = this.#client;
@@ -239,7 +237,7 @@ export class TikTokBrowserConnector {
       onDiagnostic: (value) => this.#emitDiagnostic(value),
       allowedEventMethods: [
         'Network.webSocketCreated', 'Network.webSocketClosed', 'Network.webSocketFrameReceived',
-        'Network.loadingFailed', 'Target.targetCrashed', 'Target.targetDestroyed', 'Target.detachedFromTarget',
+        'Fetch.requestPaused', 'Target.targetCrashed', 'Target.targetDestroyed', 'Target.detachedFromTarget',
       ],
     });
     this.#client = client;
@@ -247,6 +245,14 @@ export class TikTokBrowserConnector {
     const owned = await withTimeout((operationSignal) => createOwnedTarget(client, { ...this.#config, signal: operationSignal, navigate: false }), this.#config.navigationTimeoutMs, signal, 'TikTok page setup timed out');
     this.#targetId = owned.targetId;
     this.#emitDiagnostic({ code: 'tiktok_browser.page_created' });
+    const stopMediaBlocker = this.#config.blockMedia
+      ? await installTikTokMediaBlocker(client, {
+        sessionId: owned.sessionId,
+        signal,
+        onBlocked: () => { this.#counters.blockedMediaRequests += 1; },
+        onDiagnostic: (value) => this.#emitDiagnostic(value),
+      })
+      : async () => {};
     const selected = new Set();
     const socketSeen = deferred();
     let connected = false;
@@ -279,20 +285,30 @@ export class TikTokBrowserConnector {
           if (this.#counters.decodeFailures <= 5 || this.#counters.decodeFailures % 100 === 0) this.#emitDiagnostic({ code: 'tiktok_browser.frame_decode_failed', failures: this.#counters.decodeFailures, error: errorMessage(error) });
         }
       }, { sessionId: owned.sessionId }),
-      client.subscribe('Network.loadingFailed', ({ blockedReason }) => { if (blockedReason === 'inspector') this.#counters.blockedMediaRequests += 1; }, { sessionId: owned.sessionId }),
       client.subscribe('Target.targetCrashed', ({ targetId }) => { if (targetId === owned.targetId) channel.close(new Error('Owned TikTok page crashed')); }),
       client.subscribe('Target.targetDestroyed', ({ targetId }) => { if (targetId === owned.targetId) channel.close(new Error('Owned TikTok page closed')); }),
       client.subscribe('Target.detachedFromTarget', ({ targetId, sessionId }) => { if (targetId === owned.targetId || sessionId === owned.sessionId) channel.close(new Error('Owned TikTok page detached')); }),
     ];
     void client.disconnected.then((error) => channel.close(error));
     this.#emitDiagnostic({ code: 'tiktok_browser.webcast_waiting' });
-    const cleanup = () => { clearTimeout(staleTimer); for (const unsubscribe of off) unsubscribe(); if (connected) selected.clear(); channel.close(); };
+    let cleaned = false;
+    const cleanup = async () => {
+      if (cleaned) return;
+      cleaned = true;
+      clearTimeout(staleTimer);
+      for (const unsubscribe of off) unsubscribe();
+      await stopMediaBlocker();
+      if (connected) selected.clear();
+      channel.close();
+      if (this.#sessionCleanup === cleanup) this.#sessionCleanup = undefined;
+    };
+    this.#sessionCleanup = cleanup;
     try {
       await withTimeout((operationSignal) => navigateOwnedTarget(client, { username: this.#config.username, sessionId: owned.sessionId, signal: operationSignal }), this.#config.navigationTimeoutMs, signal, 'TikTok navigation timed out');
       await withTimeout(() => socketSeen.promise, this.#config.webcastSocketTimeoutMs, signal, 'TikTok Webcast socket did not appear');
       return cleanup;
     } catch (error) {
-      cleanup();
+      await cleanup();
       throw error;
     }
   }

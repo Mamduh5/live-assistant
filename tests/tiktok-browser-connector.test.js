@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  DEFAULT_CONFIG, MEDIA_BLOCK_PATTERNS, TikTokBrowserConnector, binaryFrameFromCdp,
+  DEFAULT_CONFIG, TikTokBrowserConnector, binaryFrameFromCdp,
   closeOwnedTarget, createOwnedTarget, encodeSyntheticWebcastFrame, isTikTokWebcastSocket,
   normalizeTikTokUsername,
 } from "../src/index.js";
@@ -20,7 +20,7 @@ test("CDP binary conversion accepts only opcode 2 from selected sockets", () => 
   assert.equal(binaryFrameFromCdp({ requestId: 'other', response: { opcode: 2, payloadData: 'AA==' } }, selected), null);
 });
 
-test("owned target lifecycle blocks media before navigation and closes only its target", async () => {
+test("owned target lifecycle enables observation and closes only its target", async () => {
   const calls = [];
   const client = {
     closed: false,
@@ -31,16 +31,10 @@ test("owned target lifecycle blocks media before navigation and closes only its 
       return {};
     },
   };
-  const owned = await createOwnedTarget(client, { username: 'synthetic_user', blockMedia: true, signal: new AbortController().signal });
+  const owned = await createOwnedTarget(client, { username: 'synthetic_user', signal: new AbortController().signal });
   assert.deepEqual(owned, { targetId: 'owned-page', sessionId: 'flat-session' });
-  assert.deepEqual(calls.map(({ method }) => method), ['Target.createTarget', 'Target.attachToTarget', 'Network.enable', 'Page.enable', 'Network.setBlockedURLs', 'Page.navigate']);
-  assert.deepEqual(calls[4].params.urls, [...MEDIA_BLOCK_PATTERNS]);
-  assert.equal(calls[5].params.url, 'https://www.tiktok.com/@synthetic_user/live');
-  assert.equal(MEDIA_BLOCK_PATTERNS.some((value) => value.includes('flv')), true);
-  assert.equal(MEDIA_BLOCK_PATTERNS.some((value) => value.includes('m3u8')), true);
-  assert.equal(MEDIA_BLOCK_PATTERNS.some((value) => value.includes('mp4')), true);
-  assert.equal(MEDIA_BLOCK_PATTERNS.some((value) => value.includes('m4s')), true);
-  assert.equal(MEDIA_BLOCK_PATTERNS.some((value) => value.includes('.js')), false);
+  assert.deepEqual(calls.map(({ method }) => method), ['Target.createTarget', 'Target.attachToTarget', 'Network.enable', 'Page.enable', 'Page.navigate']);
+  assert.equal(calls[4].params.url, 'https://www.tiktok.com/@synthetic_user/live');
   await closeOwnedTarget(client, owned.targetId);
   assert.equal(calls.at(-1).method, 'Target.closeTarget');
   assert.equal(calls.some(({ method }) => method === 'Browser.close'), false);
@@ -98,6 +92,7 @@ test("connector becomes connected only after Webcast detection, accepts replacem
   await until(() => h.connector.state === 'connected');
   assert.deepEqual(h.states.slice(0, 3), ['idle', 'connecting', 'connected']);
   const socket = h.sockets[0];
+  assert.ok(socket.sent.findIndex(({ method }) => method === 'Fetch.enable') < socket.sent.findIndex(({ method }) => method === 'Page.navigate'));
   socket.message({ method: 'Network.webSocketClosed', sessionId: 'flat-session', params: { requestId: 'webcast-1' } });
   assert.equal(h.connector.state, 'reconnecting');
   socket.message({ method: 'Network.webSocketCreated', sessionId: 'flat-session', params: { requestId: 'webcast-2', url: 'wss://webcast-ws.eu.tiktok.com/webcast/im/ws_proxy/ws_reuse_supplement/' } });
@@ -111,6 +106,7 @@ test("connector becomes connected only after Webcast detection, accepts replacem
   assert.equal((await iterator.next()).done, true);
   assert.equal(socket.sent.some(({ method }) => method === 'Target.closeTarget'), true);
   assert.equal(socket.sent.some(({ method }) => method === 'Browser.close'), false);
+  assert.equal(socket.sent.some(({ method }) => method === 'Fetch.disable'), true);
   assert.equal(JSON.stringify(h.diagnostics).includes('private=value'), false);
   assert.equal([...socket.listeners.values()].every((handlers) => handlers.length === 0), true);
 });

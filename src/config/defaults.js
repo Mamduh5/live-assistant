@@ -78,6 +78,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     windows: Object.freeze({
       executable: "powershell.exe",
       voice: null,
+      languageVoices: Object.freeze({ en: null, th: null }),
       rate: 0,
       volume: 100,
     }),
@@ -193,7 +194,10 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
     speechQueue: { ...DEFAULT_CONFIG.speechQueue },
     speechEngine: {
       ...DEFAULT_CONFIG.speechEngine,
-      windows: { ...DEFAULT_CONFIG.speechEngine.windows },
+      windows: {
+        ...DEFAULT_CONFIG.speechEngine.windows,
+        languageVoices: { ...DEFAULT_CONFIG.speechEngine.windows.languageVoices },
+      },
     },
     controlServer: { ...DEFAULT_CONFIG.controlServer },
     inspector: { ...DEFAULT_CONFIG.inspector },
@@ -282,6 +286,13 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
   if (speechVoice !== undefined) {
     if (speechVoice.trim().length > 0) config.speechEngine.windows.voice = speechVoice;
     else invalid(onDiagnostic, "LIVE_ASSISTANT_SPEECH_VOICE", speechVoice, config.speechEngine.windows.voice);
+  }
+
+  for (const [environmentName, language] of [["LIVE_ASSISTANT_SPEECH_VOICE_EN", "en"], ["LIVE_ASSISTANT_SPEECH_VOICE_TH", "th"]]) {
+    const value = environment[environmentName];
+    if (value === undefined) continue;
+    if (value.trim().length > 0) config.speechEngine.windows.languageVoices[language] = value;
+    else invalid(onDiagnostic, environmentName, value, config.speechEngine.windows.languageVoices[language]);
   }
 
   const url = environment.LIVE_ASSISTANT_TIKFINITY_URL;

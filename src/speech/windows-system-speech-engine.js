@@ -1,5 +1,6 @@
 import { spawn as spawnProcess } from "node:child_process";
 import { SpeechEngineError } from "./speech-engine.js";
+import { detectSpeechScript } from "./windows-voice-selection.js";
 
 const MAX_PROCESS_OUTPUT = 4_096;
 
@@ -11,9 +12,52 @@ $jsonPayload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($enco
 $payload = $jsonPayload | ConvertFrom-Json
 $synthesizer = New-Object System.Speech.Synthesis.SpeechSynthesizer
 try {
-  $voiceName = [string]$payload.voice
-  if ($null -ne $payload.voice -and $voiceName.Length -gt 0) {
-    $synthesizer.SelectVoice($voiceName)
+  $installed = @($synthesizer.GetInstalledVoices() | Where-Object { $_.Enabled })
+  function Find-Voice([string]$name) {
+    if ([string]::IsNullOrWhiteSpace($name)) { return $null }
+    return $installed | Where-Object { $_.VoiceInfo.Name -ieq $name } | Select-Object -First 1
+  }
+  function Find-LanguageVoice([string]$language) {
+    return $installed | Where-Object { $_.VoiceInfo.Culture.Name -like "$language-*" } | Select-Object -First 1
+  }
+  function Report-Unavailable([string]$language, [string]$reason) {
+    [Console]::Out.WriteLine(([PSCustomObject]@{
+      code = 'speech.voice_unavailable'
+      requestedLanguage = $language
+      reason = $reason
+    } | ConvertTo-Json -Compress))
+  }
+
+  $selected = Find-Voice ([string]$payload.voice)
+  if ($null -ne $payload.voice -and ([string]$payload.voice).Length -gt 0 -and $null -eq $selected) {
+    Report-Unavailable 'configured' 'configured_voice_not_installed'
+  }
+  $language = $null
+  $preferred = $null
+  if ($null -eq $selected -and [string]$payload.classification -eq 'thai') {
+    $language = 'th'
+    $preferred = [string]$payload.languageVoices.th
+  }
+  elseif ($null -eq $selected -and [string]$payload.classification -eq 'english') {
+    $language = 'en'
+    $preferred = [string]$payload.languageVoices.en
+  }
+  if ($null -eq $selected -and -not [string]::IsNullOrWhiteSpace($preferred)) {
+    $selected = Find-Voice $preferred
+    if ($null -eq $selected) {
+      Report-Unavailable $(if ($language -eq 'th') { 'th-TH' } else { 'en-US' }) 'configured_language_voice_not_installed'
+    }
+  }
+  if ($null -eq $selected -and $null -ne $language) { $selected = Find-LanguageVoice $language }
+  if ($null -eq $selected -and $language -eq 'th') {
+    Report-Unavailable 'th-TH' 'language_voice_not_installed'
+  }
+  if ($null -eq $selected) {
+    $selected = Find-Voice ([string]$payload.languageVoices.en)
+    if ($null -eq $selected) { $selected = Find-LanguageVoice 'en' }
+  }
+  if ($null -ne $selected) {
+    $synthesizer.SelectVoice($selected.VoiceInfo.Name)
   }
   $synthesizer.Rate = [int]$payload.rate
   $synthesizer.Volume = [int]$payload.volume
@@ -47,9 +91,14 @@ function processFailureMessage(prefix, error) {
   return `${prefix}: ${detail}`.slice(0, MAX_PROCESS_OUTPUT);
 }
 
-function validateOptions({ executable, voice, rate, volume }) {
+function validateOptions({ executable, voice, languageVoices, rate, volume }) {
   if (typeof executable !== "string" || executable.length === 0) throw new TypeError("Windows speech executable is required");
   if (voice !== null && voice !== undefined && (typeof voice !== "string" || voice.length === 0)) throw new TypeError("Windows speech voice must be null or a non-empty string");
+  if (!languageVoices || typeof languageVoices !== "object" || Array.isArray(languageVoices)) throw new TypeError("Windows speech language voices must be an object");
+  for (const language of ["en", "th"]) {
+    const value = languageVoices[language];
+    if (value !== null && value !== undefined && (typeof value !== "string" || value.length === 0)) throw new TypeError(`Windows ${language} speech voice must be null or a non-empty string`);
+  }
   if (!Number.isSafeInteger(rate) || rate < -10 || rate > 10) throw new RangeError("Windows speech rate must be an integer from -10 to 10");
   if (!Number.isSafeInteger(volume) || volume < 0 || volume > 100) throw new RangeError("Windows speech volume must be an integer from 0 to 100");
 }
@@ -57,6 +106,7 @@ function validateOptions({ executable, voice, rate, volume }) {
 export class WindowsSystemSpeechEngine {
   #executable;
   #voice;
+  #languageVoices;
   #rate;
   #volume;
   #platform;
@@ -64,15 +114,19 @@ export class WindowsSystemSpeechEngine {
   #active = new Map();
   #closed = false;
   #closePromise;
+  #onDiagnostic;
 
-  constructor({ executable = "powershell.exe", voice = null, rate = 0, volume = 100, platform = process.platform, spawn = spawnProcess } = {}) {
-    validateOptions({ executable, voice, rate, volume });
+  constructor({ executable = "powershell.exe", voice = null, languageVoices = { en: null, th: null }, rate = 0, volume = 100,
+    platform = process.platform, spawn = spawnProcess, onDiagnostic = () => {} } = {}) {
+    validateOptions({ executable, voice, languageVoices, rate, volume });
     this.#executable = executable;
     this.#voice = voice;
+    this.#languageVoices = { en: languageVoices.en ?? null, th: languageVoices.th ?? null };
     this.#rate = rate;
     this.#volume = volume;
     this.#platform = platform;
     this.#spawn = spawn;
+    this.#onDiagnostic = onDiagnostic;
   }
 
   speak(text, { signal } = {}) {
@@ -118,7 +172,8 @@ export class WindowsSystemSpeechEngine {
     let stderr = "";
     let settled = false;
     let cancelled = false;
-    const onStdout = () => {};
+    let stdout = "";
+    const onStdout = (chunk) => { stdout = boundedAppend(stdout, chunk); };
     const onStderr = (chunk) => { stderr = boundedAppend(stderr, chunk); };
     child.stdout?.on("data", onStdout);
     child.stderr?.on("data", onStderr);
@@ -152,6 +207,7 @@ export class WindowsSystemSpeechEngine {
         if (cancelled || signal?.aborted || this.#closed) {
           finish(abortError());
         } else if (code === 0) {
+          this.#reportProcessDiagnostics(stdout);
           finish();
         } else {
           const detail = stderr.trim();
@@ -172,7 +228,14 @@ export class WindowsSystemSpeechEngine {
       });
 
       signal?.addEventListener("abort", cancel, { once: true });
-      const payload = Buffer.from(JSON.stringify({ text, voice: this.#voice, rate: this.#rate, volume: this.#volume }), "utf8").toString("base64");
+      const payload = Buffer.from(JSON.stringify({
+        text,
+        voice: this.#voice,
+        languageVoices: this.#languageVoices,
+        classification: detectSpeechScript(text),
+        rate: this.#rate,
+        volume: this.#volume,
+      }), "utf8").toString("base64");
       try {
         child.stdin.end(payload, "utf8");
       } catch (error) {
@@ -201,5 +264,16 @@ export class WindowsSystemSpeechEngine {
       await Promise.allSettled(active.map(({ completion }) => completion));
     })();
     return this.#closePromise;
+  }
+
+  #reportProcessDiagnostics(output) {
+    for (const line of output.split(/\r?\n/u)) {
+      try {
+        const value = JSON.parse(line);
+        if (value?.code === "speech.voice_unavailable" && typeof value.requestedLanguage === "string") {
+          this.#onDiagnostic({ code: value.code, requestedLanguage: value.requestedLanguage, ...(typeof value.reason === "string" ? { reason: value.reason } : {}) });
+        }
+      } catch { /* Other process output is intentionally ignored. */ }
+    }
   }
 }

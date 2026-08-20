@@ -76,12 +76,32 @@ test("passes voice, rate, and volume as stdin data rather than executable code",
   assert.deepEqual(payload, {
     text: "hello",
     voice: "Synthetic Voice'; Write-Output nope",
+    languageVoices: { en: null, th: null },
+    classification: "english",
     rate: -3,
     volume: 42,
   });
   assert.equal(JSON.stringify(harness.calls[0].args).includes(payload.voice), false);
   harness.children[0].emit("close", 0, null);
   await speaking;
+});
+
+test("passes deterministic language selection data and reports missing voices without failing playback", async () => {
+  const harness = spawnHarness();
+  const diagnostics = [];
+  const engine = new WindowsSystemSpeechEngine({
+    platform: "win32",
+    spawn: harness.spawn,
+    languageVoices: { en: "English Voice", th: "Thai Voice" },
+    onDiagnostic: (value) => diagnostics.push(value),
+  });
+  const speaking = engine.speak("สวัสดี");
+  assert.equal(harness.children[0].inputPayload().classification, "thai");
+  assert.deepEqual(harness.children[0].inputPayload().languageVoices, { en: "English Voice", th: "Thai Voice" });
+  harness.children[0].stdout.write('{"code":"speech.voice_unavailable","requestedLanguage":"th-TH","reason":"language_voice_not_installed"}\n');
+  harness.children[0].emit("close", 0, null);
+  await speaking;
+  assert.deepEqual(diagnostics, [{ code: "speech.voice_unavailable", requestedLanguage: "th-TH", reason: "language_voice_not_installed" }]);
 });
 
 test("rejects non-zero process exits with bounded structured failure", async () => {
@@ -150,4 +170,3 @@ test("reports unsupported platforms without spawning a process", async () => {
   });
   assert.equal(spawnCalls, 0);
 });
-

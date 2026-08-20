@@ -10,7 +10,7 @@ A manual regional experiment with a dedicated, authenticated Chrome profile succ
 
 ## Decision
 
-Live Assistant uses a separately started dedicated Chrome profile as the authentication and TikTok transport owner. The `tiktok-browser` connector attaches through a loopback-only Chrome DevTools Protocol endpoint, creates one owned page, configures media URL blocking before navigation, observes conservatively selected TikTok Webcast WebSockets, and decodes their binary protobuf messages locally. It never proxies, replaces, acknowledges, or recreates TikTok's WebSocket.
+Live Assistant uses a separately started dedicated Chrome profile as the authentication and TikTok transport owner. The `tiktok-browser` connector attaches through a loopback-only Chrome DevTools Protocol endpoint, creates one owned page, enables Fetch interception before navigation, resolves every paused request, aborts locally classified livestream media, observes conservatively selected TikTok Webcast WebSockets, and decodes their binary protobuf messages locally. It never proxies, replaces, acknowledges, or recreates TikTok's WebSocket. `Network.setBlockedURLs` is not retained because its wildcard behavior failed real CDN URLs and would obscure Fetch-domain accounting.
 
 The connector emits a small decoded TikTok-browser envelope. `normalizeTikTokBrowserEvent` is the only boundary that maps it to canonical `LiveEvent` v1. TikTok protobuf objects never reach runtime, Attention, speech, or dashboard policy. TikFinity stays available, DOM scraping is not used, and the simulator stays the default.
 

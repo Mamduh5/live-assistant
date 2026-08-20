@@ -8,7 +8,7 @@ The deterministic speech policy and bounded queue already produce provider-indep
 
 ## Decision
 
-Introduce a small `SpeechEngine` convention and a sequential `SpeechWorker`. The first provider is `WindowsSystemSpeechEngine`, using one non-interactive Windows PowerShell process and `System.Speech.Synthesis.SpeechSynthesizer` per utterance. Playback remains off by default and the provider is explicitly Windows-only.
+Introduce a small `SpeechEngine` convention and a sequential `SpeechWorker`. The first provider is `WindowsSystemSpeechEngine`, using one non-interactive Windows PowerShell process and `System.Speech.Synthesis.SpeechSynthesizer` per utterance. Playback remains off by default and the provider is explicitly Windows-only. Per-utterance Unicode script classification selects installed `th-*` or `en-*` voices when available; a global configured voice remains the highest-precedence override. Mixed, unknown, and missing-language cases use a deterministic English/default fallback and remain observable.
 
 ## Security
 
@@ -19,5 +19,8 @@ Livestream-controlled text is untrusted data. The child process is started with 
 - Playback works locally and offline with zero new npm dependencies.
 - Queueing, worker lifecycle, and provider behavior remain independently replaceable.
 - The first provider requires Windows PowerShell, `System.Speech`, and an installed local voice.
+- Multilingual playback requires the corresponding voice to be installed and exposed through `System.Speech`; Windows language installation alone is not proof of availability.
+- Safe discovery returns only sanitized voice metadata. Missing matches emit `speech.voice_unavailable` and do not stop the worker.
+- `Windows.Media.SpeechSynthesis` was investigated as a route to modern OneCore voices, but its inventory failed with an internal speech error on the validation machine. A second unverified playback backend was therefore not introduced.
 - One process per utterance has startup overhead but avoids persistent IPC, daemon recovery, and a larger attack surface.
 - Cloud, browser, macOS, and Linux providers can be added later without changing policy or queue semantics.

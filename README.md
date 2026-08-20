@@ -79,7 +79,7 @@ The Chrome remote-debugging port grants powerful browser access. Keep it loopbac
   --user-data-dir="$env:LOCALAPPDATA\LiveAssistant\TikTokChrome"
 ```
 
-If Chrome is installed under 32-bit Program Files, use `${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe` instead. Log into TikTok manually in that dedicated profile once if needed, and ensure the creator is currently LIVE. Then run:
+If Chrome is installed under 32-bit Program Files, use `${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe` instead. Normally, start this dedicated Chrome once, log into TikTok once, and leave Chrome running. The development loop is: start Chrome once -> log in once -> repeatedly start and stop Live Assistant. Ensure the creator is currently LIVE, then run:
 
 ```powershell
 node src/cli.js `
@@ -91,7 +91,7 @@ node src/cli.js `
 
 Open `http://127.0.0.1:4820/`. Add `--speech=windows` for optional local TTS; `--attention=ai` remains a separate opt-in requiring OpenAI configuration. A leading `@` in `--tiktok-user` is accepted. `LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME` can provide the username instead.
 
-Media blocking is enabled by default for FLV, HLS/m3u8, MP4, M4S, `pull-flv`, and `pull-hls` URLs. It does not block the document, scripts, fetch/XHR, or WebSockets needed by the LIVE page. Live Assistant does not inspect cookies, browser storage, password data, authorization headers, or browser profile files. Status and diagnostics omit debugger/WebSocket queries and headers; canonical `raw` contains only the bounded decoded event, never binary frames or complete CDP messages.
+Media blocking is enabled by default. CDP Fetch interception is installed before navigation; `Media` requests and URLs classified locally as FLV, HLS/m3u8, MP4, M4S, `pull-flv`, or `pull-hls` are aborted, while every other paused request is explicitly continued. Document, script, fetch/XHR, CSS, API, and WebSocket requests are not blocked unless their URL explicitly contains one of those media markers. Live Assistant does not inspect cookies, browser storage, password data, authorization headers, or browser profile files. Status and diagnostics omit request URLs, debugger/WebSocket queries, and headers; canonical `raw` contains only the bounded decoded event, never binary frames or complete CDP messages.
 
 Supported native mappings are:
 
@@ -131,7 +131,19 @@ Manual acceptance test: start dedicated Chrome, log in if necessary, start the c
 
 Configuration is centralized in `src/config/defaults.js`. A small set of safe tuning values can be overridden through environment variables; invalid overrides fall back to defaults with a diagnostic. TikFinity supports `LIVE_ASSISTANT_TIKFINITY_URL`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_INITIAL_MS`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_MAX_MS`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_MULTIPLIER`, and `LIVE_ASSISTANT_TIKFINITY_RECONNECT_JITTER_RATIO`. Set `LIVE_ASSISTANT_INSPECT_RAW=true` or pass `--include-raw` to explicitly include upstream payloads in inspector output.
 
-Speech supports `LIVE_ASSISTANT_SPEECH_ENGINE=off|windows`, `LIVE_ASSISTANT_SPEECH_VOICE`, `LIVE_ASSISTANT_SPEECH_RATE` (`-10` to `10`), and `LIVE_ASSISTANT_SPEECH_VOLUME` (`0` to `100`). `--speech=off|windows` overrides the configured engine for one CLI run. The default voice is the Windows system default, rate is `0`, and volume is `100`.
+Speech supports `LIVE_ASSISTANT_SPEECH_ENGINE=off|windows`, `LIVE_ASSISTANT_SPEECH_VOICE`, `LIVE_ASSISTANT_SPEECH_VOICE_EN`, `LIVE_ASSISTANT_SPEECH_VOICE_TH`, `LIVE_ASSISTANT_SPEECH_RATE` (`-10` to `10`), and `LIVE_ASSISTANT_SPEECH_VOLUME` (`0` to `100`). `--speech=off|windows` overrides the configured engine for one CLI run. A valid global voice override takes precedence. Otherwise Thai-script text prefers an installed `th-*` voice, Latin text prefers an installed `en-*` voice, and mixed/unknown text uses the configured/default English fallback. Detection is conservative Unicode script classification, not semantic language detection.
+
+Windows multilingual TTS requires the corresponding voice to be installed and visible to `System.Speech`. If Thai text arrives without a `th-*` voice, the engine emits `speech.voice_unavailable` with `requestedLanguage: th-TH` and uses the configured/default English fallback without stopping the FIFO worker. Inspect the current `System.Speech` inventory in PowerShell without playing audio:
+
+```powershell
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$s.GetInstalledVoices() |
+  ForEach-Object { $_.VoiceInfo } |
+  Select-Object Name, Culture, Gender
+```
+
+The exported `discoverWindowsSystemSpeechVoices()` provider returns only `name`, `language`, optional `gender`, and `enabled`; it never returns registry paths. On the validation machine, only Microsoft David Desktop and Microsoft Zira Desktop (`en-US`) were exposed. Do not assume a Thai voice is installed after adding a Windows language pack—confirm it with the command above.
 
 Speech requests remain FIFO. The worker waits without polling, speaks one request at a time, and isolates ordinary provider failures. A finite connector run closes the producer side and drains queued speech before exit. Ctrl+C cancels the active PowerShell child, clears remaining speech, and exits promptly.
 

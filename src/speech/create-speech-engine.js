@@ -8,8 +8,8 @@ export function resolveSpeechEngineType(requestedType, configuredType = "off") {
   return type;
 }
 
-export function createSpeechEngine({ type, config, windowsDependencies = {} }) {
+export function createSpeechEngine({ type, config, windowsDependencies = {}, onDiagnostic = () => {} }) {
   const resolvedType = resolveSpeechEngineType(type, config.type);
   if (resolvedType === "off") return null;
-  return new WindowsSystemSpeechEngine({ ...config.windows, ...windowsDependencies });
+  return new WindowsSystemSpeechEngine({ ...config.windows, onDiagnostic, ...windowsDependencies });
 }

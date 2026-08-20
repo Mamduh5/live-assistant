@@ -130,7 +130,7 @@ export class LiveAssistantRuntime {
     this.#speechPolicy = new DeterministicSpeechPolicy(config.speechPolicy);
     this.#speechQueue = new SpeechQueue({ ...config.speechQueue, onDiagnostic: (value) => this.reportDiagnostic(value) });
     const engine = speechEngine === undefined
-      ? createSpeechEngine({ type: speechEngineType, config: config.speechEngine })
+      ? createSpeechEngine({ type: speechEngineType, config: config.speechEngine, onDiagnostic: (value) => this.reportDiagnostic(value) })
       : speechEngine;
     this.#speechWorker = engine
       ? new SpeechWorker({ queue: this.#speechQueue, engine, onDiagnostic: (value) => this.reportDiagnostic(value) })
