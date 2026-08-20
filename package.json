@@ -15,5 +15,8 @@
     "check": "node scripts/check-syntax.js",
     "test": "node --test --experimental-test-isolation=none",
     "validate": "npm run check && npm test"
+  },
+  "dependencies": {
+    "protobufjs": "^8.7.2"
   }
 }

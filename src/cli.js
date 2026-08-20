@@ -5,20 +5,22 @@ import {
   SIMULATOR_SCENARIOS,
   SimulatorConnector,
   TikFinityConnector,
+  TikTokBrowserConnector,
   aiProviderConfigurationIssue,
   createJsonLogger,
   loadConfig,
   normalizeTikFinityEnvelope,
+  normalizeTikTokBrowserEvent,
+  normalizeTikTokUsername,
   resolveSpeechEngineType,
   resolveAttentionMode,
+  AVAILABLE_CONNECTORS,
+  cliOption,
+  isAvailableConnector,
 } from "./index.js";
 
 function option(name) {
-  const argumentsAfterScript = process.argv.slice(2);
-  const namedIndex = argumentsAfterScript.indexOf(name);
-  if (namedIndex >= 0) return argumentsAfterScript[namedIndex + 1];
-  const assigned = argumentsAfterScript.find((value) => value.startsWith(`${name}=`));
-  return assigned?.slice(name.length + 1);
+  return cliOption(name);
 }
 
 function positionalScenario() {
@@ -63,7 +65,13 @@ let normalize;
 let runtimeDiagnostic = configDiagnostics;
 const relayDiagnostic = (diagnostic) => runtimeDiagnostic(diagnostic);
 
-if (connectorChoice === "simulator") {
+if (!isAvailableConnector(connectorChoice)) {
+  logger.error("cli.invalid_connector", {
+    connector: connectorChoice,
+    availableConnectors: AVAILABLE_CONNECTORS,
+  });
+  process.exitCode = 1;
+} else if (connectorChoice === "simulator") {
   if (!Object.hasOwn(SIMULATOR_SCENARIOS, scenario)) {
     logger.error("cli.invalid_scenario", { scenario, availableScenarios: Object.keys(SIMULATOR_SCENARIOS) });
     process.exitCode = 1;
@@ -73,12 +81,18 @@ if (connectorChoice === "simulator") {
 } else if (connectorChoice === "tikfinity") {
   connector = new TikFinityConnector({ ...config.tikfinity, onDiagnostic: relayDiagnostic });
   normalize = normalizeTikFinityEnvelope;
-} else {
-  logger.error("cli.invalid_connector", {
-    connector: connectorChoice,
-    availableConnectors: ["simulator", "tikfinity"],
-  });
-  process.exitCode = 1;
+} else if (connectorChoice === "tiktok-browser") {
+  const suppliedUsername = option("--tiktok-user") ?? config.tiktokBrowser.username;
+  const username = normalizeTikTokUsername(suppliedUsername);
+  if (!username) {
+    logger.error("cli.tiktok_browser_username_required", {
+      reason: "Use --tiktok-user=<USERNAME> or LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME",
+    });
+    process.exitCode = 1;
+  } else {
+    connector = new TikTokBrowserConnector({ ...config.tiktokBrowser, username, onDiagnostic: relayDiagnostic });
+    normalize = normalizeTikTokBrowserEvent;
+  }
 }
 
 const aiProviderIssue = aiProviderConfigurationIssue({

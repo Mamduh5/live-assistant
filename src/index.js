@@ -1,4 +1,5 @@
 export { DEFAULT_CONFIG, loadConfig } from "./config/defaults.js";
+export { AVAILABLE_CONNECTORS, cliOption, isAvailableConnector } from "./cli-options.js";
 export { AttentionEngine, resolveAttentionMode } from "./attention/attention-engine.js";
 export { AiAttentionBatcher } from "./attention/ai-attention-batcher.js";
 export { AiProviderError, OpenAiAttentionProvider, aiProviderConfigurationIssue, validateAiAnalysis } from "./attention/ai-attention-provider.js";
@@ -27,6 +28,12 @@ export {
   SIMULATOR_SCENARIOS,
 } from "./connectors/simulator-connector.js";
 export { TikFinityConnector, abortableDelay } from "./connectors/tikfinity-connector.js";
+export {
+  TikTokBrowserConnector, MEDIA_BLOCK_PATTERNS, binaryFrameFromCdp, closeOwnedTarget,
+  createOwnedTarget, navigateOwnedTarget, isTikTokWebcastSocket, normalizeTikTokUsername,
+} from "./connectors/tiktok-browser/tiktok-browser-connector.js";
+export { CdpClient, CdpProtocolError, discoverBrowserWebSocket, sanitizedUrl, validateCdpUrl, waitForWebSocketOpen } from "./connectors/tiktok-browser/cdp-client.js";
+export { decodeWebcastFrame, encodeSyntheticWebcastFrame, SUPPORTED_WEBCAST_METHODS } from "./connectors/tiktok-browser/webcast-decoder.js";
 export { EventHistory } from "./events/event-history.js";
 export { LiveEventBus } from "./events/live-event-bus.js";
 export {
@@ -44,6 +51,7 @@ export { runConnector } from "./live/run-connector.js";
 export { LiveAssistantRuntime, RuntimeControlError } from "./live/live-assistant-runtime.js";
 export { normalizeRawSimulatorPayload } from "./normalization/raw-simulator-normalizer.js";
 export { normalizeTikFinityEnvelope } from "./normalization/tikfinity-normalizer.js";
+export { normalizeTikTokBrowserEvent } from "./normalization/tiktok-browser-normalizer.js";
 export { DeterministicSpeechPolicy } from "./speech/deterministic-speech-policy.js";
 export { createSpeechEngine, resolveSpeechEngineType } from "./speech/create-speech-engine.js";
 export { SpeechEngineError, assertSpeechEngine, isSpeechCancellation } from "./speech/speech-engine.js";

@@ -23,10 +23,10 @@ Each layer remains independently replaceable where practical. The application st
 `LiveAssistantRuntime` is the single application composition used by the CLI and optional dashboard. It coordinates the connector, event bus, bounded history, Attention Engine, deterministic speech policy, queue, worker, speech engine, lifecycle cancellation, status projection, and control operations. Provider parsing remains in normalizers, attention consumes only canonical events, playback remains in speech engines, and HTTP/HTML concerns remain in adapters.
 
 ```text
-TikFinity / Simulator -> LiveAssistantRuntime
-                         |-> canonical event pipeline
-                         |-> bounded speech pipeline
-                         `-> status and control projection
+TikFinity / TikTok Browser / Simulator -> LiveAssistantRuntime
+                                          |-> canonical event pipeline
+                                          |-> bounded speech pipeline
+                                          `-> status and control projection
                                   |
                            LocalControlServer
                             |-> REST snapshots/commands
@@ -48,7 +48,13 @@ Event API projections include canonical fields and a domain-owned display summar
 
 Connectors establish and close external connections, report connection state, receive raw events, reconnect where appropriate, and surface transport errors. They do not implement speech, attention, actions, OBS behavior, or UI state.
 
-Implemented inputs are the simulator and the optional TikFinity Desktop adapter. Direct TikTok, YouTube Live, and Twitch transports are not selected.
+Implemented inputs are the simulator, the optional TikFinity Desktop adapter, and the opt-in `tiktok-browser` adapter. Anonymous/direct TikTok authentication, YouTube Live, and Twitch transports are not selected.
+
+`TikTokBrowserConnector` attaches to a separately started, dedicated authenticated Chrome instance through loopback-only CDP. It creates and owns one target, enables Network/Page observation, installs FLV/HLS/MP4/M4S and pull-media blocking before navigating to the requested TikTok LIVE page, and observes only TikTok-owned Webcast IM WebSockets. Chrome retains authentication, cookies, browser challenges, WebSocket handshakes, heartbeat, and ACK ownership. The connector never calls cookie/storage APIs, logs headers or query strings, proxies traffic, or sends Webcast messages.
+
+CDP connection alone is `connecting`; only detection of an active selected Webcast socket is `connected`. Chrome-created replacement sockets are accepted within the stale window. Target loss, stale Webcast traffic, discovery failure, and CDP loss dispose the owned session and retry with bounded jittered backoff. Shutdown closes only the owned target and local CDP connection and never sends `Browser.close`.
+
+Binary frames pass through a size-bounded local protobufjs decoder. It emits only selected small native events, does not retain frame bytes, and suppresses unrelated protocol methods. The minimal 0BSD schema derivative is isolated in `src/vendor/piratetok-webcast`; see [ADR 0008](decisions/0008-tiktok-browser-webcast-connector.md).
 
 `TikFinityConnector` uses Node's native WebSocket client to connect to `ws://127.0.0.1:21213/` by default. It owns JSON framing, top-level envelope validation, lifecycle state, cancellation, and reconnect scheduling. Unexpected failure uses configurable exponential backoff with bounded jitter; a successful connection resets the delay. Explicit close or abort stops the socket and all reconnect attempts. TikFinity being unavailable is an observable offline state, not an application-fatal error.
 
@@ -66,6 +72,8 @@ Both report lifecycle state and support cancellation. The canonical simulator en
 Each real connector has its own normalizer. A normalizer owns provider-field extraction and converts exactly one upstream payload into one canonical event. Unsupported or malformed input becomes `platform.unknown`; it is never silently discarded. The complete input remains in `raw`.
 
 `TikFinityNormalizer` maps `chat`, `gift`, `share`, `follow`, `like`, `roomUser`, and `subscribe` into the existing canonical namespace. It preserves the complete `{ event, data }` envelope as `raw`. Gift repeat updates describe upstream streak state but are not aggregated into transactions. Unsupported event names and recognized events with invalid required data remain distinguishable unknown events.
+
+`normalizeTikTokBrowserEvent` independently maps decoded browser events. `WebcastChatMessage`, `WebcastGiftMessage`, `WebcastLikeMessage`, routed `WebcastSocialMessage`, `WebcastRoomUserSeqMessage`, and `WebcastSubNotifyMessage` become existing canonical types. Like `count` is incremental; room `viewerCount` is current occupancy, while cumulative `totalUser` is intentionally not used. Decoded `WebcastMemberMessage` is not promoted to a new canonical join type. `raw` is the bounded decoded native envelope and never contains a binary frame or CDP message.
 
 Normalization reports what the upstream event represents. Aggregation—especially gift streak completion—is a later session/domain responsibility.
 
@@ -175,17 +183,18 @@ Structured diagnostics expose connector lifecycle, normalization failures, queue
 ## Current decisions
 
 - TikFinity is an optional adapter, not the domain.
+- Dedicated authenticated Chrome may serve as a read-only TikTok transport; see [ADR 0008](decisions/0008-tiktok-browser-webcast-connector.md).
 - Canonical events preserve raw input.
 - The simulator is first-class.
 - Core operation is local-first.
 - AI is optional.
 - OBS is an adapter.
 - Configuration is centralized and validated at startup.
-- The initial runtime is dependency-free Node.js ESM; see [ADR 0002](decisions/0002-native-node-runtime.md).
+- The core runtime remains native Node.js ESM; the isolated Webcast decoder adds only `protobufjs`. See [ADR 0002](decisions/0002-native-node-runtime.md) and [ADR 0008](decisions/0008-tiktok-browser-webcast-connector.md).
 - TikFinity is an optional local WebSocket adapter; see [ADR 0003](decisions/0003-tikfinity-adapter.md).
 - Speech engines are replaceable, with Windows System.Speech as the first local provider; see [ADR 0004](decisions/0004-windows-system-speech-engine.md).
 - Local operations use a loopback REST/SSE control plane and same-origin static dashboard; see [ADR 0005](decisions/0005-local-control-plane.md).
 - Deterministic Attention Phase 1 uses bounded exact-match state and an explicit candidate boundary; see [ADR 0006](decisions/0006-deterministic-attention-engine.md).
 - AI Attention Phase 2 uses bounded semantic batches, strict provider validation, minimal external data, and deterministic fallback; see [ADR 0007](decisions/0007-ai-attention-provider.md).
 
-Frontend frameworks, desktop shells, HTTP server libraries, non-Windows TTS providers, persistence, direct TikTok transport, deployment, and plugin runtime remain undecided.
+Frontend frameworks, desktop shells, HTTP server libraries, non-Windows TTS providers, persistence, anonymous/direct TikTok authentication, deployment, and plugin runtime remain undecided.

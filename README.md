@@ -15,16 +15,20 @@ SimulatorConnector -> canonical LiveEvent -> bounded LiveEventBus
 TikFinity Desktop -> TikFinityConnector -> TikFinityNormalizer
                                        -> the same LiveEventBus and consumers
 
-TikFinity / Simulator -> LiveAssistantRuntime -> local control server
-                                             |-> REST + SSE
-                                             `-> browser dashboard
+Dedicated Chrome -> local CDP -> TikTokBrowserConnector -> Webcast decoder
+                                                        -> TikTokBrowserNormalizer
+                                                        -> the same LiveEventBus and consumers
+
+TikFinity / TikTok Browser / Simulator -> LiveAssistantRuntime -> local control server
+                                                              |-> REST + SSE
+                                                              `-> browser dashboard
 ```
 
 ## Requirements
 
 - Node.js 22 or newer
 
-There are no package dependencies, and passthrough/deterministic operation requires no account, livestream, AI provider, or external service. AI Attention is an explicit opt-in that sends selected chat text to OpenAI and requires `OPENAI_API_KEY`.
+The only runtime package dependency is `protobufjs`, used by the local TikTok Webcast decoder. Simulator and TikFinity passthrough/deterministic operation requires no AI provider. AI Attention is an explicit opt-in that sends selected chat text to OpenAI and requires `OPENAI_API_KEY`.
 
 Local audio playback currently requires Windows PowerShell and an installed `System.Speech` voice. Speech remains off by default.
 
@@ -61,6 +65,69 @@ node src/cli.js --connector=tikfinity --speech=windows
 The default endpoint is `ws://127.0.0.1:21213/`. If TikFinity is not running, Live Assistant remains alive, reports connection state, and retries with bounded exponential backoff. Press Ctrl+C to stop; explicit shutdown cancels reconnect attempts. Simulator mode remains the default.
 
 Supported mappings are `chat` -> `chat.message`, `gift` -> `gift.received`, `share` -> `social.share`, `follow` -> `social.follow`, `like` -> `engagement.like`, `roomUser` -> `room.viewer_count`, and `subscribe` -> `subscription.started`. Unsupported and recognized-but-malformed envelopes become inspectable `platform.unknown` events. Every normalized event retains the complete `{ event, data }` envelope in `raw`.
+
+## TikTok Browser Connector
+
+`tiktok-browser` is a read-only, unofficial TikTok LIVE input for cases where TikFinity is unsuitable. A dedicated Chrome profile owns TikTok login, cookies, browser challenges, and the actual Webcast WebSocket. Live Assistant attaches locally through CDP, creates one page, blocks livestream media before navigation, observes binary Webcast messages, decodes selected protobuf events locally, and feeds the existing canonical pipeline. It does not use DOM scraping and never needs your TikTok password.
+
+The Chrome remote-debugging port grants powerful browser access. Keep it loopback-only, never expose port 9222 to a LAN or the internet, and never use your normal Chrome profile. Current Chrome also requires remote debugging to use a non-default user-data directory. Start a persistent dedicated profile in PowerShell:
+
+```powershell
+& "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" `
+  --remote-debugging-port=9222 `
+  --remote-debugging-address=127.0.0.1 `
+  --user-data-dir="$env:LOCALAPPDATA\LiveAssistant\TikTokChrome"
+```
+
+If Chrome is installed under 32-bit Program Files, use `${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe` instead. Log into TikTok manually in that dedicated profile once if needed, and ensure the creator is currently LIVE. Then run:
+
+```powershell
+node src/cli.js `
+  --dashboard `
+  --connector=tiktok-browser `
+  --tiktok-user=<USERNAME> `
+  --attention=deterministic
+```
+
+Open `http://127.0.0.1:4820/`. Add `--speech=windows` for optional local TTS; `--attention=ai` remains a separate opt-in requiring OpenAI configuration. A leading `@` in `--tiktok-user` is accepted. `LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME` can provide the username instead.
+
+Media blocking is enabled by default for FLV, HLS/m3u8, MP4, M4S, `pull-flv`, and `pull-hls` URLs. It does not block the document, scripts, fetch/XHR, or WebSockets needed by the LIVE page. Live Assistant does not inspect cookies, browser storage, password data, authorization headers, or browser profile files. Status and diagnostics omit debugger/WebSocket queries and headers; canonical `raw` contains only the bounded decoded event, never binary frames or complete CDP messages.
+
+Supported native mappings are:
+
+```text
+WebcastChatMessage        -> chat.message
+WebcastGiftMessage        -> gift.received
+WebcastLikeMessage        -> engagement.like (incremental count)
+WebcastSocialMessage      -> social.follow for action 1
+                          -> social.share for actions 2..5
+WebcastRoomUserSeqMessage -> room.viewer_count (viewerCount, not cumulative totalUser)
+WebcastSubNotifyMessage   -> subscription.started
+```
+
+`WebcastMemberMessage` is schema-supported and decoded in compatibility tests, but is suppressed at runtime because v1 has no canonical join event. Unselected protocol housekeeping is also suppressed. Malformed selected messages remain isolated and later frames continue.
+
+The connector reports `connected` only after a matching active Webcast socket appears. Chrome may replace that socket without replacing the page; the connector accepts the replacement within a bounded stale window. Full CDP loss, target loss, initial socket timeout, or prolonged Webcast loss cleans up local state and retries with bounded exponential backoff. Shutdown closes only Live Assistant's page and CDP connection—it never closes Chrome, deletes the profile, or logs you out.
+
+Available environment overrides are:
+
+```text
+LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME
+LIVE_ASSISTANT_TIKTOK_BROWSER_CDP_URL
+LIVE_ASSISTANT_TIKTOK_BROWSER_NAVIGATION_TIMEOUT_MS
+LIVE_ASSISTANT_TIKTOK_BROWSER_SOCKET_TIMEOUT_MS
+LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS
+LIVE_ASSISTANT_TIKTOK_BROWSER_MAX_QUEUED_EVENTS
+LIVE_ASSISTANT_TIKTOK_BROWSER_BLOCK_MEDIA
+LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_INITIAL_MS
+LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MAX_MS
+LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MULTIPLIER
+LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_JITTER_RATIO
+```
+
+Only `localhost`, `127.0.0.1`, and `::1` CDP hosts are accepted. The Webcast protocol is unofficial and TikTok changes may break decoding. Real chat, like, room-user, and member frames were observed in the preflight experiment; follow, share, gift, and subscription still require manual real-LIVE validation.
+
+Manual acceptance test: start dedicated Chrome, log in if necessary, start the creator's LIVE normally, run the command above, then send a unique comment and likes from a second account. Confirm the connector reaches `connected`, chat/likes/viewer count appear canonically, the dashboard and Attention continue operating, and the owned page does not download FLV/HLS video. Follow/share and Windows speech can then be checked optionally.
 
 Configuration is centralized in `src/config/defaults.js`. A small set of safe tuning values can be overridden through environment variables; invalid overrides fall back to defaults with a diagnostic. TikFinity supports `LIVE_ASSISTANT_TIKFINITY_URL`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_INITIAL_MS`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_MAX_MS`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_MULTIPLIER`, and `LIVE_ASSISTANT_TIKFINITY_RECONNECT_JITTER_RATIO`. Set `LIVE_ASSISTANT_INSPECT_RAW=true` or pass `--include-raw` to explicitly include upstream payloads in inspector output.
 
@@ -138,6 +205,7 @@ Dashboard mode is explicit and additive. It starts a dependency-free local contr
 npm run dashboard
 node src/cli.js --dashboard --scenario=quiet-chat --speech=windows
 node src/cli.js --dashboard --connector=tikfinity --speech=windows
+node src/cli.js --dashboard --connector=tiktok-browser --tiktok-user=<USERNAME>
 ```
 
 Open `http://127.0.0.1:4820/`. A completed simulator scenario remains visible in event history while speech drains normally. If TikFinity is unavailable, the dashboard remains online and reports the connector's reconnecting state.
@@ -164,6 +232,6 @@ Event and attention list responses are capped at 200 records and ordered oldest-
 
 ## Current scope
 
-The foundation includes canonical events, raw and canonical simulator modes, a reconnecting native-WebSocket TikFinity adapter, unknown-event preservation, a bounded ordered bus and separate history, deterministic Attention Phase 1, opt-in AI Attention Phase 2 with deterministic fallback, deterministic speech policy, a bounded provider-independent speech queue, a sequential speech worker, optional Windows local speech, a reusable application runtime, a loopback REST/SSE control plane, a static operational dashboard, structured diagnostics, and boundary-focused tests.
+The foundation includes canonical events, raw and canonical simulator modes, a reconnecting native-WebSocket TikFinity adapter, a loopback-CDP authenticated Chrome TikTok adapter with local Webcast decoding and default media blocking, unknown-event preservation, a bounded ordered bus and separate history, deterministic Attention Phase 1, opt-in AI Attention Phase 2 with deterministic fallback, deterministic speech policy, a bounded provider-independent speech queue, a sequential speech worker, optional Windows local speech, a reusable application runtime, a loopback REST/SSE control plane, a static operational dashboard, structured diagnostics, and boundary-focused tests.
 
-TikFinity and AI evaluation fixtures are synthetic and sanitized; field compatibility and semantic fixture output are intentionally limited to tested contracts. Invalid JSON and frames without a valid event name are diagnosed and skipped at the transport boundary. Windows is the only implemented audio provider. AI chatbot replies, persistent AI memory, embeddings, vector databases, cloud speech, macOS/Linux speech, persistence, OBS, public network services, and direct TikTok connectivity remain unimplemented.
+TikFinity, Webcast, and AI evaluation fixtures are synthetic and sanitized; field compatibility and semantic fixture output are intentionally limited to tested contracts. Invalid transport frames are diagnosed and skipped or converted to bounded unknown events as appropriate. Windows is the only implemented audio provider. AI chatbot replies, persistent AI memory, embeddings, vector databases, cloud speech, macOS/Linux speech, persistence, OBS, public network services, automatic TikTok login, cookie extraction, and anonymous direct TikTok connectivity remain unimplemented.

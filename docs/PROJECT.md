@@ -26,7 +26,7 @@ Deterministic attention reduces obvious noise before any external AI is introduc
 
 AI Attention Phase 2 now implements that policy seam through bounded semantic batches and an optional OpenAI Responses API provider. It can group same-intent chat and produce short streamer-facing summaries, while the application owns thresholds, reliable counts, fallback, and final speech safety. This introduces opt-in external processing, latency, cost, and model variability without making AI required infrastructure.
 
-AI chatbot replies, persistent AI memory, embeddings, vector databases, prompt editing, dynamic provider switching, OBS, persistent settings, direct TikTok connectivity, databases, accounts, cloud hosting, and additional platforms remain outside the current foundation.
+AI chatbot replies, persistent AI memory, embeddings, vector databases, prompt editing, dynamic provider switching, OBS, persistent settings, anonymous/direct TikTok authentication, databases, accounts, cloud hosting, and additional platforms remain outside the current foundation. The implemented TikTok browser connector is read-only observation of an authenticated local Chrome transport, not a direct TikTok client.
 
 ## Success criteria
 

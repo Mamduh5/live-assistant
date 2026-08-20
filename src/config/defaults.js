@@ -1,4 +1,14 @@
 export const DEFAULT_CONFIG = Object.freeze({
+  tiktokBrowser: Object.freeze({
+    username: null,
+    cdpUrl: "http://127.0.0.1:9222",
+    navigationTimeoutMs: 30_000,
+    webcastSocketTimeoutMs: 30_000,
+    staleSocketTimeoutMs: 30_000,
+    maxQueuedEvents: 256,
+    blockMedia: true,
+    reconnect: Object.freeze({ initialDelayMs: 1_000, maxDelayMs: 15_000, multiplier: 2, jitterRatio: 0.2 }),
+  }),
   tikfinity: Object.freeze({
     url: "ws://127.0.0.1:21213/",
     reconnect: Object.freeze({
@@ -82,6 +92,12 @@ export const DEFAULT_CONFIG = Object.freeze({
 });
 
 const POSITIVE_INTEGER_FIELDS = [
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_NAVIGATION_TIMEOUT_MS", "tiktokBrowser", "navigationTimeoutMs"],
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_SOCKET_TIMEOUT_MS", "tiktokBrowser", "webcastSocketTimeoutMs"],
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS", "tiktokBrowser", "staleSocketTimeoutMs"],
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_MAX_QUEUED_EVENTS", "tiktokBrowser", "maxQueuedEvents"],
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_INITIAL_MS", "tiktokBrowser.reconnect", "initialDelayMs"],
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MAX_MS", "tiktokBrowser.reconnect", "maxDelayMs"],
   ["LIVE_ASSISTANT_TIKFINITY_RECONNECT_INITIAL_MS", "tikfinity.reconnect", "initialDelayMs"],
   ["LIVE_ASSISTANT_TIKFINITY_RECONNECT_MAX_MS", "tikfinity.reconnect", "maxDelayMs"],
   ["LIVE_ASSISTANT_EVENT_QUEUE_LIMIT", "eventBus", "maxQueue"],
@@ -106,11 +122,14 @@ const POSITIVE_INTEGER_FIELDS = [
 ];
 
 const BOOLEAN_FIELDS = [
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_BLOCK_MEDIA", "tiktokBrowser", "blockMedia"],
   ["LIVE_ASSISTANT_INSPECT_RAW", "inspector", "includeRaw"],
   ["LIVE_ASSISTANT_ALLOW_URLS", "speechPolicy", "allowUrls"],
 ];
 
 const NUMBER_FIELDS = [
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MULTIPLIER", "tiktokBrowser.reconnect", "multiplier", (value) => value >= 1],
+  ["LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_JITTER_RATIO", "tiktokBrowser.reconnect", "jitterRatio", (value) => value >= 0 && value <= 1],
   ["LIVE_ASSISTANT_TIKFINITY_RECONNECT_MULTIPLIER", "tikfinity.reconnect", "multiplier", (value) => value >= 1],
   ["LIVE_ASSISTANT_TIKFINITY_RECONNECT_JITTER_RATIO", "tikfinity.reconnect", "jitterRatio", (value) => value >= 0 && value <= 1],
 ];
@@ -148,6 +167,10 @@ function validWebSocketUrl(value) {
 
 export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
   const config = {
+    tiktokBrowser: {
+      ...DEFAULT_CONFIG.tiktokBrowser,
+      reconnect: { ...DEFAULT_CONFIG.tiktokBrowser.reconnect },
+    },
     tikfinity: {
       ...DEFAULT_CONFIG.tikfinity,
       reconnect: { ...DEFAULT_CONFIG.tikfinity.reconnect },
@@ -187,8 +210,9 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
   for (const [environmentName, section, field] of BOOLEAN_FIELDS) {
     const value = environment[environmentName];
     if (value === undefined) continue;
-    if (value !== "true" && value !== "false") invalid(onDiagnostic, environmentName, value, config[section][field]);
-    else config[section][field] = value === "true";
+    const target = sectionAt(config, section);
+    if (value !== "true" && value !== "false") invalid(onDiagnostic, environmentName, value, target[field]);
+    else target[field] = value === "true";
   }
 
 
@@ -266,6 +290,23 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
     else invalid(onDiagnostic, "LIVE_ASSISTANT_TIKFINITY_URL", url, config.tikfinity.url);
   }
 
+  const browserUsername = environment.LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME;
+  if (browserUsername !== undefined) {
+    const normalized = browserUsername.trim().replace(/^@/, "");
+    if (/^[A-Za-z0-9._]{2,24}$/.test(normalized)) config.tiktokBrowser.username = normalized;
+    else invalid(onDiagnostic, "LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME", browserUsername, config.tiktokBrowser.username);
+  }
+
+  const browserCdpUrl = environment.LIVE_ASSISTANT_TIKTOK_BROWSER_CDP_URL;
+  if (browserCdpUrl !== undefined) {
+    try {
+      const parsed = new URL(browserCdpUrl);
+      if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password
+        || !["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname.toLowerCase())) throw new Error("invalid");
+      config.tiktokBrowser.cdpUrl = parsed.href.replace(/\/$/, "");
+    } catch { invalid(onDiagnostic, "LIVE_ASSISTANT_TIKTOK_BROWSER_CDP_URL", "[redacted]", config.tiktokBrowser.cdpUrl); }
+  }
+
   const controlHost = environment.LIVE_ASSISTANT_CONTROL_HOST;
   if (controlHost !== undefined) {
     if (["127.0.0.1", "localhost", "::1"].includes(controlHost)) config.controlServer.host = controlHost;
@@ -310,6 +351,11 @@ export function loadConfig(environment = process.env, onDiagnostic = () => {}) {
   if (config.tikfinity.reconnect.maxDelayMs < config.tikfinity.reconnect.initialDelayMs) {
     invalid(onDiagnostic, "tikfinity.reconnect", config.tikfinity.reconnect, DEFAULT_CONFIG.tikfinity.reconnect);
     config.tikfinity.reconnect = { ...DEFAULT_CONFIG.tikfinity.reconnect };
+  }
+
+  if (config.tiktokBrowser.reconnect.maxDelayMs < config.tiktokBrowser.reconnect.initialDelayMs) {
+    invalid(onDiagnostic, "tiktokBrowser.reconnect", config.tiktokBrowser.reconnect, DEFAULT_CONFIG.tiktokBrowser.reconnect);
+    config.tiktokBrowser.reconnect = { ...DEFAULT_CONFIG.tiktokBrowser.reconnect };
   }
 
   return config;

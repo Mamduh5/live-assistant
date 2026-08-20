@@ -45,6 +45,33 @@ test("loads validated TikFinity endpoint and reconnect overrides", () => {
   });
 });
 
+test("loads TikTok browser defaults and validated environment overrides", () => {
+  assert.deepEqual(loadConfig({}).tiktokBrowser, DEFAULT_CONFIG.tiktokBrowser);
+  const config = loadConfig({
+    LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME: '@synthetic_user',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_CDP_URL: 'http://localhost:9333',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_NAVIGATION_TIMEOUT_MS: '1200',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_SOCKET_TIMEOUT_MS: '1300',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS: '1400',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_MAX_QUEUED_EVENTS: '12',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_BLOCK_MEDIA: 'false',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_INITIAL_MS: '10',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MAX_MS: '50',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MULTIPLIER: '1.5',
+    LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_JITTER_RATIO: '0.1',
+  });
+  assert.equal(config.tiktokBrowser.username, 'synthetic_user'); assert.equal(config.tiktokBrowser.cdpUrl, 'http://localhost:9333');
+  assert.equal(config.tiktokBrowser.blockMedia, false); assert.equal(config.tiktokBrowser.staleSocketTimeoutMs, 1400);
+  assert.equal(config.tiktokBrowser.maxQueuedEvents, 12);
+  assert.deepEqual(config.tiktokBrowser.reconnect, { initialDelayMs: 10, maxDelayMs: 50, multiplier: 1.5, jitterRatio: 0.1 });
+});
+
+test("invalid TikTok browser values diagnose and retain safe loopback defaults", () => {
+  const diagnostics = [];
+  const config = loadConfig({ LIVE_ASSISTANT_TIKTOK_BROWSER_CDP_URL: 'http://192.168.1.5:9222', LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME: 'bad/name', LIVE_ASSISTANT_TIKTOK_BROWSER_BLOCK_MEDIA: 'yes', LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_INITIAL_MS: '100', LIVE_ASSISTANT_TIKTOK_BROWSER_RECONNECT_MAX_MS: '10' }, (value) => diagnostics.push(value));
+  assert.deepEqual(config.tiktokBrowser, DEFAULT_CONFIG.tiktokBrowser); assert.equal(diagnostics.length, 4);
+});
+
 test("falls back safely for invalid TikFinity configuration", () => {
   const diagnostics = [];
   const config = loadConfig({

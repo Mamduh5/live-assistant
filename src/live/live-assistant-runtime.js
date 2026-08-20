@@ -264,6 +264,10 @@ export class LiveAssistantRuntime {
         name: this.#connector.name,
         state: this.#connectorState,
         ...(this.#connector.name === "tikfinity" ? { endpoint: publicEndpoint(this.#config.tikfinity.url) } : {}),
+        ...(this.#connector.name === "tiktok-browser" ? {
+          endpoint: publicEndpoint(this.#config.tiktokBrowser.cdpUrl),
+          ...(this.#connector.counters ? { counters: this.#connector.counters } : {}),
+        } : {}),
       },
       speech: {
         configuredEngine: this.#speechEngineType,
