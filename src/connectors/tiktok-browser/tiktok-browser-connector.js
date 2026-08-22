@@ -1,5 +1,5 @@
 import { abortableDelay } from "../tikfinity-connector.js";
-import { CdpClient, discoverBrowserWebSocket, sanitizedUrl, validateCdpUrl, waitForWebSocketOpen } from "./cdp-client.js";
+import { CdpClient, CdpProtocolError, discoverBrowserWebSocket, sanitizedUrl, validateCdpUrl, waitForWebSocketOpen } from "./cdp-client.js";
 import { decodeWebcastFrame } from "./webcast-decoder.js";
 import { installTikTokMediaBlocker } from "./media-blocker.js";
 const MAX_SELECTED_SOCKETS = 8;
@@ -41,10 +41,38 @@ function boundedIncrement(value, amount = 1) {
   return Math.min(Number.MAX_SAFE_INTEGER, value + amount);
 }
 
+const SAFE_TARGET_MODES = Object.freeze([
+  Object.freeze({ name: 'hidden', params: Object.freeze({ url: 'about:blank', background: true, hidden: true }) }),
+  Object.freeze({ name: 'background_unfocused', params: Object.freeze({ url: 'about:blank', background: true, focus: false }) }),
+  Object.freeze({ name: 'background', params: Object.freeze({ url: 'about:blank', background: true }) }),
+]);
+
+function isUnsupportedTargetOption(error) {
+  return error instanceof CdpProtocolError && (error.code === -32602
+    || /invalid parameters?|unknown (?:parameter|property)|unexpected (?:parameter|property)|not (?:found|supported)/iu.test(error.message));
+}
+
+export async function createSafeBackgroundTarget(client, { signal, onFallback = () => {} } = {}) {
+  let previousError;
+  for (const mode of SAFE_TARGET_MODES) {
+    try {
+      const { targetId } = await client.send('Target.createTarget', { ...mode.params }, { signal });
+      if (typeof targetId !== 'string' || targetId.length === 0) throw new Error('Chrome omitted the safely created target identifier');
+      return { targetId, mode: mode.name };
+    } catch (error) {
+      previousError = error;
+      if (!isUnsupportedTargetOption(error)) throw error;
+      onFallback({ rejectedMode: mode.name });
+    }
+  }
+  throw new Error(`Chrome does not support safe background target creation: ${errorMessage(previousError)}`);
+}
+
 class AsyncChannel {
   #items = [];
   #waiters = [];
   #closed = false;
+  #error;
   #maximum;
   #onDrop;
   constructor(maximum, onDrop) { this.#maximum = maximum; this.#onDrop = onDrop; }
@@ -60,12 +88,21 @@ class AsyncChannel {
   close(error) {
     if (this.#closed) return;
     this.#closed = true;
+    this.#error = error;
     for (const waiter of this.#waiters.splice(0)) waiter({ done: true, error });
   }
   next() {
     if (this.#items.length) return Promise.resolve({ value: this.#items.shift() });
-    if (this.#closed) return Promise.resolve({ done: true });
+    if (this.#closed) return Promise.resolve({ done: true, error: this.#error });
     return new Promise((resolve) => this.#waiters.push(resolve));
+  }
+}
+
+class SessionRecoveryError extends Error {
+  constructor(reason, message) {
+    super(message);
+    this.name = 'SessionRecoveryError';
+    this.recoveryReason = reason;
   }
 }
 
@@ -86,15 +123,16 @@ function withTimeout(operation, timeoutMs, signal, message) {
   });
 }
 
-export async function createOwnedTarget(client, { username, signal, navigate = true }) {
-  const { targetId } = await client.send('Target.createTarget', { url: 'about:blank' }, { signal });
+export async function createOwnedTarget(client, { username, signal, navigate = true, onTargetCreated, onTargetFallback }) {
+  const { targetId, mode } = await createSafeBackgroundTarget(client, { signal, onFallback: onTargetFallback });
+  onTargetCreated?.({ targetId, mode });
   let sessionId;
   try {
     ({ sessionId } = await client.send('Target.attachToTarget', { targetId, flatten: true }, { signal }));
     await client.send('Network.enable', {}, { sessionId, signal });
     await client.send('Page.enable', {}, { sessionId, signal });
     if (navigate) await navigateOwnedTarget(client, { username, sessionId, signal });
-    return { targetId, sessionId };
+    return { targetId, sessionId, mode };
   } catch (error) {
     try { await client.send('Target.closeTarget', { targetId }); } catch {}
     throw error;
@@ -130,7 +168,15 @@ export class TikTokBrowserConnector {
   #diagnostic;
   #setTimer;
   #clearTimer;
-  #counters = { blockedRequests: 0, blockedMediaRequests: 0, blockedImageRequests: 0, blockedFontRequests: 0, webcastFrames: 0, webcastBytes: 0, decodedEvents: 0, decodeFailures: 0, droppedEvents: 0 };
+  #recovery = { lastReason: null };
+  #navigation = { lastClassification: null };
+  #counters = {
+    blockedRequests: 0, blockedMediaRequests: 0, blockedImageRequests: 0, blockedFontRequests: 0,
+    webcastFrames: 0, webcastBytes: 0, decodedEvents: 0, decodeFailures: 0, droppedEvents: 0,
+    targetCreations: 0, targetRecoveries: 0, applicationNavigations: 0, pageNavigations: 0,
+    webcastSocketCreated: 0, webcastSocketClosed: 0, replacementSocketTimeouts: 0,
+    cdpDisconnects: 0, targetCrashes: 0, targetDestroyed: 0, targetDetached: 0,
+  };
 
   constructor({ username, cdpUrl, navigationTimeoutMs, webcastSocketTimeoutMs, replacementSocketTimeoutMs, maxQueuedEvents, blockMedia,
     reconnect, webSocketFactory = (url) => new WebSocket(url), fetchImpl = globalThis.fetch,
@@ -157,6 +203,8 @@ export class TikTokBrowserConnector {
 
   get state() { return this.#state; }
   get counters() { return { ...this.#counters }; }
+  get recovery() { return { ...this.#recovery }; }
+  get navigation() { return { ...this.#navigation }; }
 
   subscribeState(handler) {
     if (typeof handler !== 'function') throw new TypeError('State subscriber must be a function');
@@ -184,13 +232,16 @@ export class TikTokBrowserConnector {
     signal?.addEventListener('abort', onAbort, { once: true });
     let delayBase = this.#config.reconnect.initialDelayMs;
     let attempt = 0;
+    let recoveryReason = 'initial_start';
     try {
       while (!lifecycleSignal.aborted) {
         attempt += 1;
+        this.#recovery.lastReason = recoveryReason;
+        if (attempt > 1) this.#counters.targetRecoveries = boundedIncrement(this.#counters.targetRecoveries);
         this.#transition(attempt === 1 ? 'connecting' : 'reconnecting');
-        this.#emitDiagnostic({ code: 'tiktok_browser.cdp_connecting', endpoint: sanitizedUrl(this.#config.cdpUrl), attempt });
+        this.#emitDiagnostic({ code: 'tiktok_browser.cdp_connecting', endpoint: sanitizedUrl(this.#config.cdpUrl), attempt, recoveryReason });
         const channel = new AsyncChannel(this.#config.maxQueuedEvents, () => {
-          this.#counters.droppedEvents += 1;
+          this.#counters.droppedEvents = boundedIncrement(this.#counters.droppedEvents);
           if (this.#counters.droppedEvents <= 5 || this.#counters.droppedEvents % 100 === 0) this.#emitDiagnostic({ code: 'tiktok_browser.event_queue_overflow', droppedEvents: this.#counters.droppedEvents });
         });
         let cleanup = async () => {};
@@ -204,11 +255,13 @@ export class TikTokBrowserConnector {
           }
         } catch (error) {
           if (lifecycleSignal.aborted) break;
+          recoveryReason = error?.recoveryReason ?? (errorMessage(error).includes('Webcast socket did not appear') ? 'initial_socket_timeout' : 'session_failed');
+          this.#recovery.lastReason = recoveryReason;
           this.#transition('error');
           const message = errorMessage(error);
           const code = message.includes('Webcast socket did not appear') ? 'tiktok_browser.webcast_timeout'
             : message.includes('navigation') ? 'tiktok_browser.navigation_failed' : 'tiktok_browser.cdp_failed';
-          this.#emitDiagnostic({ code, attempt, error: message });
+          this.#emitDiagnostic({ code, attempt, recoveryReason, error: message });
         } finally {
           await cleanup();
           const targetId = this.#targetId;
@@ -233,26 +286,45 @@ export class TikTokBrowserConnector {
   }
 
   async #openSession(channel, signal) {
-    const endpoint = await withTimeout((operationSignal) => discoverBrowserWebSocket(this.#config.cdpUrl, { fetchImpl: this.#fetch, signal: operationSignal }), this.#config.navigationTimeoutMs, signal, 'CDP discovery timed out');
+    let endpoint;
+    try {
+      endpoint = await withTimeout((operationSignal) => discoverBrowserWebSocket(this.#config.cdpUrl, { fetchImpl: this.#fetch, signal: operationSignal }), this.#config.navigationTimeoutMs, signal, 'CDP discovery timed out');
+    } catch (error) {
+      throw new SessionRecoveryError('cdp_discovery_failed', errorMessage(error));
+    }
     const socket = this.#webSocketFactory(endpoint);
     try {
       await withTimeout((operationSignal) => waitForWebSocketOpen(socket, operationSignal), this.#config.navigationTimeoutMs, signal, 'CDP WebSocket timed out');
     } catch (error) {
       try { socket.close(); } catch {}
-      throw error;
+      throw new SessionRecoveryError('cdp_connection_failed', errorMessage(error));
     }
     const client = new CdpClient(socket, {
       onDiagnostic: (value) => this.#emitDiagnostic(value),
       allowedEventMethods: [
         'Network.webSocketCreated', 'Network.webSocketClosed', 'Network.webSocketFrameReceived',
         'Fetch.requestPaused', 'Target.targetCrashed', 'Target.targetDestroyed', 'Target.detachedFromTarget',
+        'Page.frameNavigated',
       ],
     });
     this.#client = client;
     this.#emitDiagnostic({ code: 'tiktok_browser.cdp_connected' });
-    const owned = await withTimeout((operationSignal) => createOwnedTarget(client, { ...this.#config, signal: operationSignal, navigate: false }), this.#config.navigationTimeoutMs, signal, 'TikTok page setup timed out');
+    let owned;
+    try {
+      owned = await withTimeout((operationSignal) => createOwnedTarget(client, {
+        ...this.#config,
+        signal: operationSignal,
+        navigate: false,
+        onTargetCreated: ({ mode }) => {
+          this.#counters.targetCreations = boundedIncrement(this.#counters.targetCreations);
+          this.#emitDiagnostic({ code: 'tiktok_browser.page_created', targetMode: mode });
+        },
+        onTargetFallback: ({ rejectedMode }) => this.#emitDiagnostic({ code: 'tiktok_browser.safe_target_mode_unsupported', rejectedMode }),
+      }), this.#config.navigationTimeoutMs, signal, 'TikTok page setup timed out');
+    } catch (error) {
+      throw new SessionRecoveryError('target_setup_failed', errorMessage(error));
+    }
     this.#targetId = owned.targetId;
-    this.#emitDiagnostic({ code: 'tiktok_browser.page_created' });
     const stopMediaBlocker = this.#config.blockMedia
       ? await installTikTokMediaBlocker(client, {
         sessionId: owned.sessionId,
@@ -267,6 +339,8 @@ export class TikTokBrowserConnector {
       : async () => {};
     const selected = new Set();
     const socketSeen = deferred();
+    let pendingApplicationNavigation = this.#counters.targetRecoveries > 0 ? 'application_recovery' : 'initial';
+    let sessionClosed = false;
     let replacementTimer;
     const clearReplacementTimer = () => {
       if (replacementTimer === undefined) return;
@@ -277,7 +351,10 @@ export class TikTokBrowserConnector {
       clearReplacementTimer();
       replacementTimer = this.#setTimer(() => {
         replacementTimer = undefined;
-        if (!signal.aborted && selected.size === 0) channel.close(new Error('Webcast replacement socket did not appear'));
+        if (!signal.aborted && selected.size === 0) {
+          this.#counters.replacementSocketTimeouts = boundedIncrement(this.#counters.replacementSocketTimeouts);
+          channel.close(new SessionRecoveryError('replacement_timeout', 'Webcast replacement socket did not appear'));
+        }
       }, this.#config.replacementSocketTimeoutMs);
     };
     const off = [
@@ -285,37 +362,65 @@ export class TikTokBrowserConnector {
         if (!isTikTokWebcastSocket(url)) return;
         if (selected.size >= MAX_SELECTED_SOCKETS) selected.delete(selected.values().next().value);
         selected.add(requestId); clearReplacementTimer(); socketSeen.resolve();
+        this.#counters.webcastSocketCreated = boundedIncrement(this.#counters.webcastSocketCreated);
         this.#transition('connected'); this.#emitDiagnostic({ code: 'tiktok_browser.webcast_connected', endpoint: sanitizedUrl(url) });
       }, { sessionId: owned.sessionId }),
       client.subscribe('Network.webSocketClosed', ({ requestId }) => {
         if (!selected.delete(requestId)) return;
+        this.#counters.webcastSocketClosed = boundedIncrement(this.#counters.webcastSocketClosed);
         if (selected.size === 0) {
           this.#transition('reconnecting');
           this.#emitDiagnostic({ code: 'tiktok_browser.webcast_disconnected', replacementTimeoutMs: this.#config.replacementSocketTimeoutMs });
           waitForReplacement();
         }
       }, { sessionId: owned.sessionId }),
+      client.subscribe('Page.frameNavigated', ({ frame }) => {
+        if (!frame || frame.parentId) return;
+        this.#counters.pageNavigations = boundedIncrement(this.#counters.pageNavigations);
+        const classification = pendingApplicationNavigation ?? 'site_navigation';
+        pendingApplicationNavigation = null;
+        this.#navigation.lastClassification = classification;
+        this.#emitDiagnostic({ code: 'tiktok_browser.page_navigated', classification });
+      }, { sessionId: owned.sessionId }),
       client.subscribe('Network.webSocketFrameReceived', (params) => {
         const bytes = binaryFrameFromCdp(params, selected); if (!bytes) return;
-        this.#counters.webcastFrames += 1; this.#counters.webcastBytes += bytes.byteLength;
+        this.#counters.webcastFrames = boundedIncrement(this.#counters.webcastFrames);
+        this.#counters.webcastBytes = boundedIncrement(this.#counters.webcastBytes, bytes.byteLength);
         try {
-          const decoded = this.#decode(bytes); this.#counters.decodedEvents += decoded.length;
+          const decoded = this.#decode(bytes); this.#counters.decodedEvents = boundedIncrement(this.#counters.decodedEvents, decoded.length);
           for (const event of decoded) if (!signal.aborted) channel.push(event);
         } catch (error) {
-          this.#counters.decodeFailures += 1;
+          this.#counters.decodeFailures = boundedIncrement(this.#counters.decodeFailures);
           if (this.#counters.decodeFailures <= 5 || this.#counters.decodeFailures % 100 === 0) this.#emitDiagnostic({ code: 'tiktok_browser.frame_decode_failed', failures: this.#counters.decodeFailures, error: errorMessage(error) });
         }
       }, { sessionId: owned.sessionId }),
-      client.subscribe('Target.targetCrashed', ({ targetId }) => { if (targetId === owned.targetId) channel.close(new Error('Owned TikTok page crashed')); }),
-      client.subscribe('Target.targetDestroyed', ({ targetId }) => { if (targetId === owned.targetId) channel.close(new Error('Owned TikTok page closed')); }),
-      client.subscribe('Target.detachedFromTarget', ({ targetId, sessionId }) => { if (targetId === owned.targetId || sessionId === owned.sessionId) channel.close(new Error('Owned TikTok page detached')); }),
+      client.subscribe('Target.targetCrashed', ({ targetId }) => {
+        if (targetId !== owned.targetId) return;
+        this.#counters.targetCrashes = boundedIncrement(this.#counters.targetCrashes);
+        channel.close(new SessionRecoveryError('target_crashed', 'Owned TikTok page crashed'));
+      }),
+      client.subscribe('Target.targetDestroyed', ({ targetId }) => {
+        if (targetId !== owned.targetId) return;
+        this.#counters.targetDestroyed = boundedIncrement(this.#counters.targetDestroyed);
+        channel.close(new SessionRecoveryError('target_destroyed', 'Owned TikTok page closed'));
+      }),
+      client.subscribe('Target.detachedFromTarget', ({ targetId, sessionId }) => {
+        if (targetId !== owned.targetId && sessionId !== owned.sessionId) return;
+        this.#counters.targetDetached = boundedIncrement(this.#counters.targetDetached);
+        channel.close(new SessionRecoveryError('target_detached', 'Owned TikTok page detached'));
+      }),
     ];
-    void client.disconnected.then((error) => channel.close(error));
+    void client.disconnected.then(() => {
+      if (sessionClosed || signal.aborted) return;
+      this.#counters.cdpDisconnects = boundedIncrement(this.#counters.cdpDisconnects);
+      channel.close(new SessionRecoveryError('cdp_disconnected', 'CDP WebSocket disconnected'));
+    });
     this.#emitDiagnostic({ code: 'tiktok_browser.webcast_waiting' });
     let cleaned = false;
     const cleanup = async () => {
       if (cleaned) return;
       cleaned = true;
+      sessionClosed = true;
       clearReplacementTimer();
       for (const unsubscribe of off) unsubscribe();
       await stopMediaBlocker();
@@ -325,8 +430,17 @@ export class TikTokBrowserConnector {
     };
     this.#sessionCleanup = cleanup;
     try {
-      await withTimeout((operationSignal) => navigateOwnedTarget(client, { username: this.#config.username, sessionId: owned.sessionId, signal: operationSignal }), this.#config.navigationTimeoutMs, signal, 'TikTok navigation timed out');
-      await withTimeout(() => socketSeen.promise, this.#config.webcastSocketTimeoutMs, signal, 'TikTok Webcast socket did not appear');
+      this.#counters.applicationNavigations = boundedIncrement(this.#counters.applicationNavigations);
+      try {
+        await withTimeout((operationSignal) => navigateOwnedTarget(client, { username: this.#config.username, sessionId: owned.sessionId, signal: operationSignal }), this.#config.navigationTimeoutMs, signal, 'TikTok navigation timed out');
+      } catch (error) {
+        throw new SessionRecoveryError('navigation_failed', errorMessage(error));
+      }
+      try {
+        await withTimeout(() => socketSeen.promise, this.#config.webcastSocketTimeoutMs, signal, 'TikTok Webcast socket did not appear');
+      } catch (error) {
+        throw new SessionRecoveryError('initial_socket_timeout', errorMessage(error));
+      }
       return cleanup;
     } catch (error) {
       await cleanup();

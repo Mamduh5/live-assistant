@@ -68,7 +68,7 @@ Supported mappings are `chat` -> `chat.message`, `gift` -> `gift.received`, `sha
 
 ## TikTok Browser Connector
 
-`tiktok-browser` is a read-only, unofficial TikTok LIVE input for cases where TikFinity is unsuitable. A dedicated Chrome profile owns TikTok login, cookies, browser challenges, and the actual Webcast WebSocket. Live Assistant attaches locally through CDP, creates one page, blocks livestream media before navigation, observes binary Webcast messages, decodes selected protobuf events locally, and feeds the existing canonical pipeline. It does not use DOM scraping and never needs your TikTok password.
+`tiktok-browser` is a read-only, unofficial TikTok LIVE input for cases where TikFinity is unsuitable. A dedicated Chrome process/profile owns TikTok login, cookies, browser challenges, and the actual Webcast WebSocket. Live Assistant attaches locally through CDP, creates a separate hidden/background event target, blocks livestream media before navigation, observes binary Webcast messages, decodes selected protobuf events locally, and feeds the existing canonical pipeline. It does not use DOM scraping and never needs your TikTok password.
 
 The Chrome remote-debugging port grants powerful browser access. Keep it loopback-only, never expose port 9222 to a LAN or the internet, and never use your normal Chrome profile. Current Chrome also requires remote debugging to use a non-default user-data directory. Start a persistent dedicated profile in PowerShell:
 
@@ -79,7 +79,7 @@ The Chrome remote-debugging port grants powerful browser access. Keep it loopbac
   --user-data-dir="$env:LOCALAPPDATA\LiveAssistant\TikTokChrome"
 ```
 
-If Chrome is installed under 32-bit Program Files, use `${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe` instead. Normally, start this dedicated Chrome once, log into TikTok once, and leave Chrome running. The development loop is: start Chrome once -> log in once -> repeatedly start and stop Live Assistant. Ensure the creator is currently LIVE, then run:
+If Chrome is installed under 32-bit Program Files, use `${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe` instead. Normally, start this dedicated Chrome once, log into TikTok once, minimize it, and leave it running. The Chrome process and Live Assistant-owned event target are different things: the connector's target is hidden/background and never requires user interaction. The development loop is: start Chrome once -> log in once -> minimize Chrome -> repeatedly start and stop Live Assistant. Ensure the creator is currently LIVE, then run:
 
 ```powershell
 node src/cli.js `
@@ -107,6 +107,14 @@ While the dashboard run is active, inspect categorized blocker accounting withou
 (Invoke-RestMethod http://127.0.0.1:4820/api/v1/status).connector.counters | Format-List
 ```
 
+For a long gameplay run, inspect the full sanitized browser state with:
+
+```powershell
+(Invoke-RestMethod http://127.0.0.1:4820/api/v1/status).connector | Format-List -Property state,counters,recovery,navigation
+```
+
+`counters` includes `targetCreations`, `targetRecoveries`, `applicationNavigations`, `pageNavigations`, `webcastSocketCreated`, `webcastSocketClosed`, `replacementSocketTimeouts`, `cdpDisconnects`, `targetCrashes`, `targetDestroyed`, and `targetDetached`. `recovery.lastReason` identifies the last application recovery cause, while `navigation.lastClassification` distinguishes `initial`, `application_recovery`, and `site_navigation`. URLs, cookies, and headers are not included.
+
 Media blocking is enabled by default. CDP Fetch interception is installed before navigation; all `Media`, `Image`, and `Font` requests are aborted. Any request whose sanitized host/path contains `.flv`, `.m3u8`, `.mp4`, `.m4s`, `.webm`, `.mp3`, `.aac`, `.m4a`, `.ogg`, `.wav`, `pull-flv`, or `pull-hls` is also aborted. Every other paused request is explicitly continued. Document, script, stylesheet, normal fetch/XHR, API, and WebSocket traffic remains available. The owned page is an event transport and is intentionally bandwidth-minimized, so it may look mostly blank. Live Assistant does not inspect cookies, browser storage, password data, authorization headers, or browser profile files. Status and diagnostics omit request URLs, debugger/WebSocket queries, and headers; canonical `raw` contains only the bounded decoded event, never binary frames or complete CDP messages.
 
 Supported native mappings are:
@@ -123,7 +131,9 @@ WebcastSubNotifyMessage   -> subscription.started
 
 `WebcastMemberMessage` is schema-supported and decoded in compatibility tests, but is suppressed at runtime because v1 has no canonical join event. Unselected protocol housekeeping is also suppressed. Malformed selected messages remain isolated and later frames continue.
 
-The connector reports `connected` only after a matching active Webcast socket appears. An open Webcast socket is healthy regardless of how long it is quiet; frame silence never causes navigation or recovery. If the last selected socket explicitly closes, Chrome gets a bounded replacement-socket window to create another socket without reloading the page. Only replacement timeout, full CDP loss, target loss, or initial socket timeout recovers the owned target/session. Shutdown closes only Live Assistant's page and CDP connection—it never closes Chrome, deletes the profile, or logs you out.
+Target creation first requests `{ url: "about:blank", background: true, hidden: true }`. If that experimental option is unsupported, it tries `{ url: "about:blank", background: true, focus: false }`, then `{ url: "about:blank", background: true }`. It never requests `newWindow`, calls `Target.activateTarget`, creates an incognito/browser context, or falls back to a foreground target; a Chrome version without a safe creation mode fails clearly.
+
+The connector reports `connected` only after a matching active Webcast socket appears. An open Webcast socket is healthy regardless of how long it is quiet; frame silence never causes navigation or recovery. If the last selected socket explicitly closes, Chrome gets a bounded replacement-socket window to create another socket without reloading the page. Only replacement timeout, full CDP loss, target crash/destruction/detachment, initial socket timeout, navigation/setup failure, or CDP discovery/connection failure can enter bounded target/session recovery. Every recovery uses the same hidden/background creation sequence. A TikTok-initiated top-level navigation is observed but does not itself recover. Shutdown closes only Live Assistant's target and CDP connection—it never closes Chrome, deletes the profile, or logs you out.
 
 Available environment overrides are:
 
@@ -145,7 +155,7 @@ The former `LIVE_ASSISTANT_TIKTOK_BROWSER_STALE_SOCKET_TIMEOUT_MS` is accepted t
 
 Only `localhost`, `127.0.0.1`, and `::1` CDP hosts are accepted. The Webcast protocol is unofficial and TikTok changes may break decoding. Real chat, like, room-user, and member frames were observed in the preflight experiment; follow, share, gift, and subscription still require manual real-LIVE validation.
 
-Manual acceptance test: start dedicated Chrome, log in if necessary, start the creator's LIVE normally, run the command above, then send a unique comment and likes from a second account. Confirm the connector reaches `connected`, chat/likes/viewer count appear canonically, the dashboard and Attention continue operating, and the owned page does not download FLV/HLS video. Follow/share and Windows speech can then be checked optionally.
+Manual gameplay acceptance test: start dedicated Chrome, log in if necessary, minimize Chrome, start the creator's LIVE normally, then run `node src/cli.js --dashboard --connector=tiktok-browser --tiktok-user=hoppy_nxttxjaxng --attention=deterministic`. Start the fullscreen game and leave the connector running through normal quiet and active periods. Confirm Chrome never becomes the foreground application, the connector remains usable, and chat/likes/viewer count continue canonically. If another refresh occurs, capture the sanitized connector status command above before restarting. Follow/share and Windows speech can then be checked optionally.
 
 Configuration is centralized in `src/config/defaults.js`. A small set of safe tuning values can be overridden through environment variables; invalid overrides fall back to defaults with a diagnostic. TikFinity supports `LIVE_ASSISTANT_TIKFINITY_URL`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_INITIAL_MS`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_MAX_MS`, `LIVE_ASSISTANT_TIKFINITY_RECONNECT_MULTIPLIER`, and `LIVE_ASSISTANT_TIKFINITY_RECONNECT_JITTER_RATIO`. Set `LIVE_ASSISTANT_INSPECT_RAW=true` or pass `--include-raw` to explicitly include upstream payloads in inspector output.
 

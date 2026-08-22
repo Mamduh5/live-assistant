@@ -30,7 +30,7 @@ export {
 export { TikFinityConnector, abortableDelay } from "./connectors/tikfinity-connector.js";
 export {
   TikTokBrowserConnector, binaryFrameFromCdp, closeOwnedTarget,
-  createOwnedTarget, navigateOwnedTarget, isTikTokWebcastSocket, normalizeTikTokUsername,
+  createOwnedTarget, createSafeBackgroundTarget, navigateOwnedTarget, isTikTokWebcastSocket, normalizeTikTokUsername,
 } from "./connectors/tiktok-browser/tiktok-browser-connector.js";
 export { classifyTikTokPresentationRequest, installTikTokMediaBlocker, shouldBlockTikTokMedia } from "./connectors/tiktok-browser/media-blocker.js";
 export { CdpClient, CdpProtocolError, discoverBrowserWebSocket, sanitizedUrl, validateCdpUrl, waitForWebSocketOpen } from "./connectors/tiktok-browser/cdp-client.js";

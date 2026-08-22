@@ -10,7 +10,7 @@ A manual regional experiment with a dedicated, authenticated Chrome profile succ
 
 ## Decision
 
-Live Assistant uses a separately started dedicated Chrome profile as the authentication and TikTok transport owner. The `tiktok-browser` connector attaches through a loopback-only Chrome DevTools Protocol endpoint, creates one owned page, enables Fetch interception before navigation, resolves every paused request, aborts locally classified livestream media, observes conservatively selected TikTok Webcast WebSockets, and decodes their binary protobuf messages locally. It never proxies, replaces, acknowledges, or recreates TikTok's WebSocket. `Network.setBlockedURLs` is not retained because its wildcard behavior failed real CDN URLs and would obscure Fetch-domain accounting.
+Live Assistant uses a separately started dedicated Chrome process and persistent default profile as the authentication and TikTok transport owner. The `tiktok-browser` connector attaches through a loopback-only Chrome DevTools Protocol endpoint and creates its event target with a capability-checked, focus-safe sequence: hidden plus background, background plus explicit `focus: false`, then background-only. It does not create a new browser context or window, activate a target, or accept a foreground fallback. It enables Fetch interception before navigation, resolves every paused request, aborts locally classified livestream media, observes conservatively selected TikTok Webcast WebSockets, and decodes their binary protobuf messages locally. It never proxies, replaces, acknowledges, or recreates TikTok's WebSocket. `Network.setBlockedURLs` is not retained because its wildcard behavior failed real CDN URLs and would obscure Fetch-domain accounting.
 
 The connector emits a small decoded TikTok-browser envelope. `normalizeTikTokBrowserEvent` is the only boundary that maps it to canonical `LiveEvent` v1. TikTok protobuf objects never reach runtime, Attention, speech, or dashboard policy. TikFinity stays available, DOM scraping is not used, and the simulator stays the default.
 
@@ -19,10 +19,12 @@ The minimal protobufjs schema is derived from PirateTok/live-js revision `ad822c
 ## Consequences
 
 - Chrome must already be running locally with remote debugging and a non-default persistent profile.
+- The Chrome process and Live Assistant-owned event target are distinct. Chrome starts once and may remain minimized; the hidden/background event target is not a tab the user needs to view or operate.
 - The user manually logs into TikTok; Live Assistant never receives the password or reads cookies/browser storage.
 - The owned page consumes browser RAM, but media, images, fonts, and known livestream audio/video paths are blocked by default. It is intentionally not a viewing browser.
 - The CDP endpoint is restricted to `localhost`, `127.0.0.1`, or `::1` and must not be exposed to a LAN.
-- Chrome can replace its Webcast socket without a page restart. Frame silence is not a health signal. Only explicit closure of the final selected socket starts a replacement timeout; expiry or full CDP/target loss triggers bounded recovery.
+- Chrome can replace its Webcast socket without a page restart. Frame silence and top-level site navigation are not health failures. Only explicit closure of the final selected socket starts a replacement timeout; expiry or full CDP/target loss triggers bounded recovery through the same focus-safe target creator.
+- Sanitized status counts target creation/recovery, application and top-level page navigation, Webcast socket creation/closure, replacement timeout, CDP disconnect, and target crash/destruction/detachment, and retains only safe recovery/navigation classifications.
 - Shutdown closes only Live Assistant's target and CDP socket. It never sends `Browser.close`, terminates Chrome, deletes the profile, or logs the user out.
 - The Webcast protocol is unofficial and can change. Its connector, decoder, and normalizer isolation confines future repairs.
 - Direct anonymous `ttwid` acquisition, automatic login, anti-bot bypass, DOM scraping, and TikFinity removal remain explicitly rejected.

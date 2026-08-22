@@ -267,6 +267,8 @@ export class LiveAssistantRuntime {
         ...(this.#connector.name === "tiktok-browser" ? {
           endpoint: publicEndpoint(this.#config.tiktokBrowser.cdpUrl),
           ...(this.#connector.counters ? { counters: this.#connector.counters } : {}),
+          ...(this.#connector.recovery ? { recovery: this.#connector.recovery } : {}),
+          ...(this.#connector.navigation ? { navigation: this.#connector.navigation } : {}),
         } : {}),
       },
       speech: {

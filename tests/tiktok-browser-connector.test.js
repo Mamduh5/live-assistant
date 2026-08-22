@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   DEFAULT_CONFIG, TikTokBrowserConnector, binaryFrameFromCdp,
-  closeOwnedTarget, createOwnedTarget, encodeSyntheticWebcastFrame, isTikTokWebcastSocket,
+  CdpProtocolError, closeOwnedTarget, createOwnedTarget, createSafeBackgroundTarget,
+  encodeSyntheticWebcastFrame, isTikTokWebcastSocket,
   normalizeTikTokUsername,
 } from "../src/index.js";
 
@@ -32,12 +33,44 @@ test("owned target lifecycle enables observation and closes only its target", as
     },
   };
   const owned = await createOwnedTarget(client, { username: 'synthetic_user', signal: new AbortController().signal });
-  assert.deepEqual(owned, { targetId: 'owned-page', sessionId: 'flat-session' });
+  assert.deepEqual(owned, { targetId: 'owned-page', sessionId: 'flat-session', mode: 'hidden' });
   assert.deepEqual(calls.map(({ method }) => method), ['Target.createTarget', 'Target.attachToTarget', 'Network.enable', 'Page.enable', 'Page.navigate']);
+  assert.deepEqual(calls[0].params, { url: 'about:blank', background: true, hidden: true });
+  assert.equal('browserContextId' in calls[0].params, false);
+  assert.equal(calls.some(({ method }) => method === 'Target.activateTarget'), false);
+  assert.equal(calls.some(({ params }) => params?.newWindow === true), false);
   assert.equal(calls[4].params.url, 'https://www.tiktok.com/@synthetic_user/live');
   await closeOwnedTarget(client, owned.targetId);
   assert.equal(calls.at(-1).method, 'Target.closeTarget');
   assert.equal(calls.some(({ method }) => method === 'Browser.close'), false);
+});
+
+test("safe target creation capability fallback never requests a foreground target", async () => {
+  const calls = [];
+  const client = {
+    async send(method, params) {
+      calls.push({ method, params });
+      if (calls.length < 3) throw new CdpProtocolError(method, { code: -32602, message: 'Invalid parameters' });
+      return { targetId: 'safe-page' };
+    },
+  };
+  assert.deepEqual(await createSafeBackgroundTarget(client), { targetId: 'safe-page', mode: 'background' });
+  assert.deepEqual(calls.map(({ params }) => params), [
+    { url: 'about:blank', background: true, hidden: true },
+    { url: 'about:blank', background: true, focus: false },
+    { url: 'about:blank', background: true },
+  ]);
+  assert.equal(calls.every(({ params }) => params.background === true && params.newWindow !== true && !('browserContextId' in params)), true);
+
+  const rejectedCalls = [];
+  await assert.rejects(createSafeBackgroundTarget({
+    async send(method, params) {
+      rejectedCalls.push({ method, params });
+      throw new CdpProtocolError(method, { code: -32602, message: 'Unknown parameter' });
+    },
+  }), /does not support safe background target creation/u);
+  assert.equal(rejectedCalls.length, 3);
+  assert.equal(rejectedCalls.every(({ params }) => params.background === true), true);
 });
 
 test("username normalization strips one leading at-sign and validates safely", () => {
@@ -113,6 +146,9 @@ test("an open Webcast socket remains healthy through five and thirty minutes of 
   assert.equal(h.connector.state, 'connected'); assert.equal(navigationCount(), 1); assert.equal(h.sockets.length, 1);
   h.timers.advance(25 * 60_000);
   assert.equal(h.connector.state, 'connected'); assert.equal(navigationCount(), 1); assert.equal(h.sockets.length, 1);
+  assert.equal(h.connector.counters.targetCreations, 1);
+  assert.equal(h.connector.counters.targetRecoveries, 0);
+  assert.equal(h.connector.counters.applicationNavigations, 1);
   await h.connector.close(); assert.equal((await next).done, true); assert.equal(h.timers.tasks.size, 0);
 });
 
@@ -134,6 +170,9 @@ test("the last socket waits for a replacement without recreating the page", asyn
   socket.message({ method: 'Network.webSocketCreated', sessionId: 'flat-session', params: { requestId: 'replacement', url: 'wss://webcast-ws.tiktok.com/webcast/im/ws_proxy/replacement/' } });
   h.timers.advance(10_000);
   assert.equal(h.connector.state, 'connected'); assert.equal(socket.sent.filter(({ method }) => method === 'Page.navigate').length, 1); assert.equal(h.timers.tasks.size, 0);
+  assert.equal(h.connector.counters.webcastSocketClosed, 1);
+  assert.equal(h.connector.counters.webcastSocketCreated, 2);
+  assert.equal(h.connector.counters.targetRecoveries, 0);
   await h.connector.close(); assert.equal((await next).done, true);
 });
 
@@ -143,6 +182,15 @@ test("replacement timeout and owned target crash recover the owned session", asy
   timed.sockets[0].message({ method: 'Network.webSocketClosed', sessionId: 'flat-session', params: { requestId: 'webcast-1' } });
   timed.timers.advance(500); await until(() => timed.waits.length === 1);
   assert.equal(timed.sockets[0].sent.some(({ method }) => method === 'Target.closeTarget'), true);
+  assert.equal(timed.connector.counters.replacementSocketTimeouts, 1);
+  assert.equal(timed.connector.recovery.lastReason, 'replacement_timeout');
+  timed.waits[0].resolve(); await until(() => timed.sockets.length === 2 && timed.connector.state === 'connected');
+  const timedCreate = timed.sockets[1].sent.find(({ method }) => method === 'Target.createTarget');
+  assert.deepEqual(timedCreate.params, { url: 'about:blank', background: true, hidden: true });
+  timed.sockets[1].message({ method: 'Page.frameNavigated', sessionId: 'flat-session', params: { frame: { id: 'recovered-top', url: 'https://www.tiktok.com/@synthetic_user/live' } } });
+  assert.equal(timed.connector.navigation.lastClassification, 'application_recovery');
+  assert.equal(timed.connector.counters.targetRecoveries, 1);
+  assert.equal(timed.sockets.flatMap(({ sent }) => sent).some(({ method, params }) => method === 'Target.activateTarget' || params?.newWindow === true), false);
   await timed.connector.close(); assert.equal((await timedNext).done, true); assert.equal(timed.timers.tasks.size, 0);
 
   const crashed = connectorHarness(); const crashedIterator = crashed.connector.events()[Symbol.asyncIterator](); const crashedNext = crashedIterator.next();
@@ -150,7 +198,28 @@ test("replacement timeout and owned target crash recover the owned session", asy
   crashed.sockets[0].message({ method: 'Target.targetCrashed', params: { targetId: 'owned-page' } });
   await until(() => crashed.waits.length === 1);
   assert.equal(crashed.sockets[0].sent.some(({ method }) => method === 'Target.closeTarget'), true);
+  assert.equal(crashed.connector.counters.targetCrashes, 1);
+  assert.equal(crashed.connector.recovery.lastReason, 'target_crashed');
+  crashed.waits[0].resolve(); await until(() => crashed.sockets.length === 2 && crashed.connector.state === 'connected');
+  assert.deepEqual(crashed.sockets[1].sent.find(({ method }) => method === 'Target.createTarget').params, { url: 'about:blank', background: true, hidden: true });
   await crashed.connector.close(); assert.equal((await crashedNext).done, true);
+});
+
+test("top-level navigation is classified without triggering recovery", async () => {
+  const h = connectorHarness(); const iterator = h.connector.events()[Symbol.asyncIterator](); const next = iterator.next();
+  await until(() => h.connector.state === 'connected'); const socket = h.sockets[0];
+  socket.message({ method: 'Page.frameNavigated', sessionId: 'flat-session', params: { frame: { id: 'top', url: 'https://www.tiktok.com/@synthetic_user/live?secret=redacted' } } });
+  assert.equal(h.connector.navigation.lastClassification, 'initial');
+  socket.message({ method: 'Page.frameNavigated', sessionId: 'flat-session', params: { frame: { id: 'child', parentId: 'top', url: 'https://example.test/child' } } });
+  assert.equal(h.connector.counters.pageNavigations, 1);
+  socket.message({ method: 'Page.frameNavigated', sessionId: 'flat-session', params: { frame: { id: 'top', url: 'https://www.tiktok.com/@synthetic_user/live' } } });
+  assert.equal(h.connector.navigation.lastClassification, 'site_navigation');
+  assert.equal(h.connector.counters.pageNavigations, 2);
+  assert.equal(h.connector.counters.targetRecoveries, 0);
+  assert.equal(socket.sent.filter(({ method }) => method === 'Page.navigate').length, 1);
+  assert.equal(socket.sent.filter(({ method }) => method === 'Fetch.enable').length, 1);
+  assert.equal(JSON.stringify(h.diagnostics).includes('secret=redacted'), false);
+  await h.connector.close(); assert.equal((await next).done, true);
 });
 
 test("connector becomes connected only after Webcast detection, accepts replacement, decodes, and cleans up", async () => {
@@ -193,7 +262,23 @@ test("CDP loss enters bounded reconnect and close aborts the pending timer", asy
   await until(() => h.connector.state === 'connected'); h.sockets[0].close();
   await until(() => h.waits.length === 1);
   assert.equal(h.waits[0].delayMs, 10); assert.equal(h.connector.state, 'reconnecting');
+  assert.equal(h.connector.counters.cdpDisconnects, 1);
+  assert.equal(h.connector.recovery.lastReason, 'cdp_disconnected');
+  h.waits[0].resolve(); await until(() => h.sockets.length === 2 && h.connector.state === 'connected');
+  assert.deepEqual(h.sockets[1].sent.find(({ method }) => method === 'Target.createTarget').params, { url: 'about:blank', background: true, hidden: true });
   await h.connector.close(); assert.equal((await next).done, true);
+});
+
+test("shutdown clears replacement recovery and cannot create a late target", async () => {
+  const h = connectorHarness({ replacementSocketTimeoutMs: 500 }); const iterator = h.connector.events()[Symbol.asyncIterator](); const next = iterator.next();
+  await until(() => h.connector.state === 'connected');
+  h.sockets[0].message({ method: 'Network.webSocketClosed', sessionId: 'flat-session', params: { requestId: 'webcast-1' } });
+  assert.equal(h.timers.tasks.size, 1);
+  await h.connector.close(); h.timers.advance(5_000);
+  assert.equal(h.timers.tasks.size, 0);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.connector.counters.targetCreations, 1);
+  assert.equal((await next).done, true);
 });
 
 test("decoded connector event buffering is bounded and observable", async () => {
