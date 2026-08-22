@@ -85,8 +85,18 @@ If Chrome is installed under 32-bit Program Files, use `${env:ProgramFiles(x86)}
 node src/cli.js `
   --dashboard `
   --connector=tiktok-browser `
-  --tiktok-user=<USERNAME> `
+  --tiktok-user=hoppy_nxttxjaxng `
   --attention=deterministic
+```
+
+### Speach command
+```powershell
+node src/cli.js `
+  --dashboard `
+  --connector=tiktok-browser `
+  --tiktok-user=hoppy_nxttxjaxng `
+  --attention=deterministic `
+  --speech=windows
 ```
 
 Open `http://127.0.0.1:4820/`. Add `--speech=windows` for optional local TTS; `--attention=ai` remains a separate opt-in requiring OpenAI configuration. A leading `@` in `--tiktok-user` is accepted. `LIVE_ASSISTANT_TIKTOK_BROWSER_USERNAME` can provide the username instead.
